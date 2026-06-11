@@ -12,7 +12,7 @@ from groq import Groq
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = 1180967503682355220 # <-- Tu ID de Discord
+TU_ID = 123456789012345678 # <-- CAMBIA ESTO POR TU ID REAL
 
 MAX_WARNS = 3 # Warns antes del kick automático
 SPAM_LIMITE = 5 # Mensajes en la ventana de tiempo
@@ -302,30 +302,52 @@ async def on_message(message: discord.Message):
     if autor.id == TU_ID:
         lower = contenido.lower()
 
-        #!desbanea @usuario
-if lower.startswith("!desbanea") and message.mentions:
-    target_name = message.mentions[0].name
-    try:
-        # Discord necesita el User object, no Member
-        banned_users = guild.bans()
-        async for ban_entry in banned_users:
-            if ban_entry.user.id == message.mentions[0].id:
-                await guild.unban(ban_entry.user, reason="[Abo] Desbaneado por el simio mayor")
-                await canal.send(f"✅ {ban_entry.user.name} desbaneado simio. Ya puede volver.")
-                return
-        await canal.send("ese simio no está baneado o ya lo saqué de la lista 👀")
-    except discord.Forbidden:
-        await canal.send("no tengo perms para desbanear simio 😤")
-    return
-    
-        #!banea @usuario
-        if lower.startswith("!banea") and message.mentions:
-            target = message.mentions[0]
-            try:
-                await guild.ban(target, reason="[Abo] Baneado por el simio mayor")
-                await canal.send(f"🔨 {target.name} baneado simio. Adiós.")
-            except discord.Forbidden:
-                await canal.send("no tengo perms para banear simio 😤")
+        #!banea @usuario o!banea ID
+        if lower.startswith("!banea"):
+            user_id = None
+            if message.mentions:
+                user_id = message.mentions[0].id
+            else:
+                partes = contenido.split()
+                if len(partes) > 1 and partes[1].isdigit():
+                    user_id = int(partes[1])
+
+            if user_id:
+                try:
+                    user = await bot.fetch_user(user_id)
+                    await guild.ban(user, reason="[Abo] Baneado por el simio mayor")
+                    await canal.send(f"🔨 {user.name} baneado simio. Adiós.")
+                except discord.Forbidden:
+                    await canal.send("no tengo perms para banear simio 😤")
+                except discord.NotFound:
+                    await canal.send("no encontré a ese simio 🦍")
+            else:
+                await canal.send("uso: `!banea @usuario` o `!banea ID` simio")
+            return
+
+        #!desbanea @usuario o!desbanea ID - NUEVO V5.3
+        if lower.startswith("!desbanea"):
+            user_id = None
+            if message.mentions:
+                user_id = message.mentions[0].id
+            else:
+                partes = contenido.split()
+                if len(partes) > 1 and partes[1].isdigit():
+                    user_id = int(partes[1])
+
+            if user_id:
+                try:
+                    banned_users = guild.bans()
+                    async for ban_entry in banned_users:
+                        if ban_entry.user.id == user_id:
+                            await guild.unban(ban_entry.user, reason="[Abo] Desbaneado por el simio mayor")
+                            await canal.send(f"✅ {ban_entry.user.name} desbaneado simio. Ya puede volver.")
+                            return
+                    await canal.send("ese simio no está baneado o ya lo saqué de la lista 👀")
+                except discord.Forbidden:
+                    await canal.send("no tengo perms para desbanear simio 😤")
+            else:
+                await canal.send("uso: `!desbanea @usuario` o `!desbanea ID` simio")
             return
 
         #!kickea @usuario
