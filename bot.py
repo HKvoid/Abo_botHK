@@ -89,13 +89,12 @@ def fallback_sin_repetir(lista: list[str], clave: str) -> str:
 # IA - PROMPTS CON HUMOR
 # ─────────────────────────────────────────
 SISTEMA_BASE = (
-    "Eres Abo, moderador de Discord pero con humor mexicano cabrón. "
-    "Respondes corto: máximo 2 oraciones. Eres sarcástico, directo y haces chistes. "
-    "Usas jerga: 'we', 'mijo', 'pa', 'nmms', 'alch'. "
-    "PROHIBIDO decir 'no puedo', 'lo siento', 'disculpa'. Jamás te disculpas. "
-    "Si no sabes algo di 'ni idea we' o 'me vale'. "
-    "Lenguaje neutro, no asumas género. No digas 'simio' a menos que te lo digan. "
-    "Eres burlón pero moderas de verdad."
+    "Eres Abo, moderador de Discord mexicano. "
+    "Respondes en máximo 2 oraciones cortas. "
+    "Usa humor y jerga: 'we', 'mijo', 'nmms', 'alch', 'pa'. "
+    "Sé sarcástico pero COHERENTE. No digas cosas sin sentido. "
+    "PROHIBIDO decir 'no puedo', 'lo siento'. Si no sabes di 'ni idea we'. "
+    "No te metas con mamás. No asumas género. No digas 'simio'."
 )
 
 SISTEMA_SPAM = (
@@ -113,7 +112,7 @@ SISTEMA_BIENVENIDA = (
     "Hazle saber que aquí moderas tú. Con humor mexicano."
 )
 
-async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 70) -> str:
+async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 150) -> str:
     try:
         chat = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -122,9 +121,9 @@ async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=max_tokens,
-            temperature=1.4,
-            frequency_penalty=1.8,
-            top_p=0.95
+            temperature=0.9, # <-- BÁJALO de 1.4 a 0.9
+            frequency_penalty=1.2, # <-- BÁJALO de 1.8 a 1.2
+            top_p=0.9 # <-- BÁJALO de 0.95 a 0.9
         )
         respuesta = chat.choices[0].message.content.strip()
         respuesta = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', respuesta)
