@@ -12,7 +12,7 @@ from groq import Groq
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = 123456789012345678 # <-- Tu ID de Discord
+TU_ID = 1180967503682355220 # <-- Tu ID de Discord
 
 MAX_WARNS = 3 # Warns antes del kick automático
 SPAM_LIMITE = 5 # Mensajes en la ventana de tiempo
