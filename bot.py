@@ -12,7 +12,7 @@ from groq import Groq
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = 123456789012345678 # <-- CAMBIA ESTO POR TU ID REAL
+TU_ID = 1180967503682355220 # <-- CAMBIA ESTO POR TU ID REAL
 
 MAX_WARNS = 3 # Warns antes del kick automático
 SPAM_LIMITE = 5 # Mensajes en la ventana de tiempo
