@@ -1,62 +1,43 @@
 import discord
-import requests
 import os
-from discord.ext import commands
+from groq import Groq
 
 TOKEN = os.getenv("TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = discord.Client(intents=intents)
 
 def preguntar_ia(prompt):
-    API_URL = "https://api-inference.huggingface.co/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-
-    payload = {
-        "inputs": f"<|system|>Eres Abo, un bot de Discord empático, además de que eres un moderador que evita que los demás se falten el respeto. Respondes corto, en español, con calidez. Terminas con 🌹 solo si la persona está triste.<|user|>{prompt}<|assistant|>",
-        "parameters": {"max_new_tokens": 80, "temperature": 0.7}
-    }
-
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-        print(f"HF Status: {response.status_code}") # <-- ESTO NOS DICE SI HF RESPONDIÓ
-        print(f"HF Response: {response.text}") # <-- ESTO NOS DICE QUÉ RESPONDIÓ
-        texto = response.json()[0]['generated_text'].split("<|assistant|>")[-1].strip()
-        return texto[:1800]
+        chat = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "Eres Abo, un bot de Discord empático, moderador. Respondes corto, en español, con calidez. Terminas con 🌹 solo si la persona está triste."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=80,
+            temperature=0.7
+        )
+        print(f"Groq Status: OK")
+        return chat.choices[0].message.content[:1800]
     except Exception as e:
-        print(f"Error HF: {e}") # <-- ESTO NOS DICE POR QUÉ TRONÓ
+        print(f"Error Groq: {e}")
         return "Ando procesando bro"
 
 @bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
-    
-    if 'discord.gg/' in message.content.lower():
-        await message.delete()
-        await message.channel.send(f'{message.author.mention} sin spam bro', delete_after=5)
-        return
-
-    # Responde cuando lo mencionan o le responden
-    if bot.user.mentioned_in(message) or message.reference:
-        respuesta = preguntar_ia(message.content)
-        await message.reply(f"Abo🌹: {respuesta}")
-        return
-
-    await bot.process_commands(message)
-
-@bot.command()
-@commands.has_permissions(manage_messages=True)
-async def clear(ctx, cantidad: int = 5):
-    await ctx.channel.purge(limit=cantidad + 1)
-    await ctx.send(f"🧹 Borré {cantidad} mensajes", delete_after=3)
+async def on_ready():
+    print(f"✅ Abo#9097 online con Groq")
 
 @bot.event
-async def on_ready():
-    print(f'✅ {bot.user} online con IA')
+async def on_message(message):
+    if message.author == bot.user: # Fix doble mensaje
+        return
+    
+    if bot.user.mentioned_in(message):
+        async with message.channel.typing(): # Pa que salga "Abo está escribiendo..."
+            respuesta = preguntar_ia(message.content)
+        await message.channel.send(respuesta)
 
 bot.run(TOKEN)
