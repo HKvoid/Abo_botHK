@@ -12,7 +12,7 @@ from groq import Groq
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = 1180967503682355220 # <-- CAMBIA ESTO POR TU ID REAL
+TU_ID = 1180967503682355220 # <-- CAMBIA ESTO POR TU ID REAL O ERES UN LOQUILLO
 
 MAX_WARNS = 3
 SPAM_LIMITE = 5
@@ -44,8 +44,36 @@ ultimo_regaño: dict[int, datetime] = {}
 LINK_REGEX = re.compile(r'(https?://|discord\.gg/|bit\.ly/|t\.me/)', re.IGNORECASE)
 
 FALLBACKS_GENERALES = [
-    "jaja", "ni idea", "ah sí claro",
-    "interesante eso", "meh", "procesa… procesando… nope",
+    "¿Me hablaste o fue el viento?",
+    "Error 404: Cerebro no encontrado",
+    "Procesando... nah mentira, ni idea",
+    "Eso qué, ¿comida?",
+    "Simón que sí... ah no, no entendí",
+    "Me dio amnesia temporal",
+    "Pregúntale a Google, yo toy ocupado",
+]
+
+FALLBACKS_SPAM = [
+    "Bájale a tu pinga, digo, a tus mensajes",
+    "¿Tienes Parkinson en los dedos o qué?",
+    "El chat no es metralladora mijo",
+    "Respira, cuenta hasta 10, luego escribe",
+    "Calmado Toreto, no es Rápidos y Furiosos",
+]
+
+FALLBACKS_CAPS = [
+    "NO GRITES QUE ME DESPIERTAS A MI ABUELITA",
+    "¿Se te atoró el BLOQ MAYUS?",
+    "Te escucho desde mi casa bro",
+    "Modo caps: desactivado. De nada.",
+    "¿Todo bien en casa? ¿Por qué gritas?",
+]
+
+FALLBACKS_LINK = [
+    "Links sin permiso = ban express pa",
+    "¿Qué es eso, un virus de 2008?",
+    "Guarda tu spam pa otro lado",
+    "Ni que fuera mercado libre pa tus links",
 ]
 
 ultimo_fallback: dict[str, int] = {}
@@ -58,31 +86,34 @@ def fallback_sin_repetir(lista: list[str], clave: str) -> str:
     return lista[idx]
 
 # ─────────────────────────────────────────
-# IA - PROMPTS NEUTROS
+# IA - PROMPTS CON HUMOR
 # ─────────────────────────────────────────
 SISTEMA_BASE = (
-    "Eres Abo, moderador de Discord. "
-    "Hablas en español mexicano informal, directo y sin formalidades. "
-    "Tus respuestas son cortas: máximo 2 oraciones. "
-    "No uses apodos como 'simio', 'bro', 'carnal' a menos que el usuario los use primero. "
-    "PROHIBIDO decir 'no puedo', 'lo siento', 'disculpa'. NUNCA te disculpes. "
-    "Si no sabes algo di 'ni idea'. "
-    "Usa lenguaje neutro, no asumas el género de nadie."
+    "Eres Abo, moderador de Discord pero con humor mexicano cabrón. "
+    "Respondes corto: máximo 2 oraciones. Eres sarcástico, directo y haces chistes. "
+    "Usas jerga: 'we', 'mijo', 'pa', 'nmms', 'alch'. "
+    "PROHIBIDO decir 'no puedo', 'lo siento', 'disculpa'. Jamás te disculpas. "
+    "Si no sabes algo di 'ni idea we' o 'me vale'. "
+    "Lenguaje neutro, no asumas género. No digas 'simio' a menos que te lo digan. "
+    "Eres burlón pero moderas de verdad."
 )
 
 SISTEMA_SPAM = (
-    "Eres Abo, moderador. "
-    "Alguien está mandando mensajes demasiado rápido. Dile que se calme, directo, en 1 oración. "
-    "Sin apodos ni emojis."
+    "Eres Abo. Alguien spamea como loco. Burlate de él en 1 oración. "
+    "Sé sarcástico, usa jerga mexicana. Sin ser grosero de a madres."
 )
 
 SISTEMA_CAPS = (
-    "Eres Abo, moderador. "
-    "Alguien está GRITANDO con mayúsculas. Dile que baje el volumen, directo, en 1 oración. "
-    "Sin apodos."
+    "Eres Abo. Alguien GRITA CON MAYÚSCULAS. Hazle un chiste de que le baje, 1 oración. "
+    "Sarcástico pero que de risa."
 )
 
-async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 60) -> str:
+SISTEMA_BIENVENIDA = (
+    "Eres Abo. Dale bienvenida sarcástica pero chida a alguien nuevo, 1 oración. "
+    "Hazle saber que aquí moderas tú. Con humor mexicano."
+)
+
+async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 70) -> str:
     try:
         chat = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -91,9 +122,9 @@ async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=max_tokens,
-            temperature=1.3,
+            temperature=1.4,
             frequency_penalty=1.8,
-            top_p=0.9
+            top_p=0.95
         )
         respuesta = chat.choices[0].message.content.strip()
         respuesta = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', respuesta)
@@ -128,37 +159,61 @@ async def aplicar_warn(guild: discord.Guild, usuario: discord.Member, canal: dis
     n = warns[usuario.id]
     if n >= MAX_WARNS:
         try:
-            await usuario.kick(reason=f"[Abo] {MAX_WARNS} warns acumulados: {motivo}")
+            await usuario.kick(reason=f"[Abo] {MAX_WARNS} warns: {motivo}")
             warns[usuario.id] = 0
-            await canal.send(f"🦍 {usuario.mention} acumuló {MAX_WARNS} warns… ya te fuiste.")
+            respuestas_kick = [
+                f"🦍 {usuario.mention} juntó {MAX_WARNS} strikes... y se fue alv",
+                f"✈️ {usuario.mention} tiene boleto directo pa fuera. {MAX_WARNS} warns papá",
+                f"💀 RIP {usuario.mention}. Causa de muerte: {MAX_WARNS} warns"
+            ]
+            await canal.send(random.choice(respuestas_kick))
         except discord.Forbidden:
-            await canal.send("Quiero kickear pero no tengo permisos.")
+            await canal.send("Quiero kickear pero Discord me tiene en modo espectador nmms")
     else:
         restantes = MAX_WARNS - n
-        await canal.send(f"⚠️ {usuario.mention} warn #{n}. Te quedan {restantes} chance{'s' if restantes!= 1 else ''}.")
+        emojis = ["⚠️", "🚨", "👮", "📢"]
+        await canal.send(f"{random.choice(emojis)} {usuario.mention} warn #{n}. Te quedan {restantes} vidas, úsalas bien.")
 
 async def aplicar_timeout(usuario: discord.Member, canal: discord.TextChannel, segundos: int, motivo: str):
     try:
         hasta = discord.utils.utcnow() + timedelta(seconds=segundos)
         await usuario.timeout(hasta, reason=f"[Abo] {motivo}")
         minutos = segundos // 60
-        await canal.send(f"🔇 {usuario.mention} timeout de {minutos} min. Motivo: {motivo}.")
+        frases_timeout = [
+            f"🔇 {usuario.mention} te fuiste {minutos} min al rincón de pensar. Motivo: {motivo}",
+            f"🤐 {usuario.mention} muteado {minutos} min. Medita tus pecados: {motivo}",
+            f"⏰ {usuario.mention} timeout de {minutos} min. Regresas cuando aprendas: {motivo}"
+        ]
+        await canal.send(random.choice(frases_timeout))
     except discord.Forbidden:
-        await canal.send("No tengo perms para el timeout.")
+        await canal.send("Quiero mutear pero no me dejan. Discord, déjame ser tóxico agusto")
 
 # ─────────────────────────────────────────
 # EVENTOS
 # ─────────────────────────────────────────
 @bot.event
 async def on_ready():
-    print(f"[Abo] Listo: {bot.user} | Servidores: {len(bot.guilds)}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="el orden del server"))
+    print(f"[Abo] Vivo y coleando: {bot.user} | Servidores: {len(bot.guilds)}")
+    estados = [
+        "sus mensajes turbios",
+        "que no hagan desmadre",
+        "el orden con humor",
+        "que no spameen"
+    ]
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=random.choice(estados)))
 
 @bot.event
 async def on_member_join(member: discord.Member):
     canal = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
     if canal:
-        await canal.send(f"👋 Bienvenid@ {member.mention}. Lee las reglas porfa.")
+        bienvenida = await preguntar_ia(
+            f"Saluda a {member.display_name} que acaba de entrar",
+            sistema=SISTEMA_BIENVENIDA,
+            fallback_lista=["Bienvenid@ al desmadre ordenado", "Llegó el nuevo, pórtense bien"],
+            fallback_clave="bienvenida",
+            max_tokens=50
+        )
+        await canal.send(f"👋 {member.mention} {bienvenida}")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -182,7 +237,6 @@ async def on_message(message: discord.Message):
     if autor.id == TU_ID:
         lower = contenido.lower()
 
-        #!banea @usuario o!banea ID
         if lower.startswith("!banea"):
             user_id = None
             if message.mentions:
@@ -194,17 +248,21 @@ async def on_message(message: discord.Message):
             if user_id:
                 try:
                     user = await bot.fetch_user(user_id)
-                    await guild.ban(user, reason="[Abo] Baneado por admin")
-                    await canal.send(f"🔨 {user.name} banead@. Adiós.")
+                    await guild.ban(user, reason="[Abo] Orden del patrón")
+                    frases_ban = [
+                        f"🔨 {user.name} fue desterrado alv. F",
+                        f"💥 {user.name} baneado. Ya no lo verás ni en tus sueños",
+                        f"🚀 {user.name} se fue a conocer a su creador"
+                    ]
+                    await canal.send(random.choice(frases_ban))
                 except discord.Forbidden:
-                    await canal.send("No tengo perms para banear.")
+                    await canal.send("Quiero banear pero Discord dice que no soy tu papá")
                 except discord.NotFound:
-                    await canal.send("No encontré a esa persona.")
+                    await canal.send("Ese we ni existe, ¿a quién quieres banear?")
             else:
-                await canal.send("Uso: `!banea @usuario` o `!banea ID`")
+                await canal.send("Uso: `!banea @usuario` we, no adivino")
             return
 
-        #!desbanea @usuario o!desbanea ID
         if lower.startswith("!desbanea"):
             user_id = None
             if message.mentions:
@@ -218,27 +276,25 @@ async def on_message(message: discord.Message):
                     banned_users = guild.bans()
                     async for ban_entry in banned_users:
                         if ban_entry.user.id == user_id:
-                            await guild.unban(ban_entry.user, reason="[Abo] Desbaneado por admin")
-                            await canal.send(f"✅ {ban_entry.user.name} desbanead@. Ya puede volver.")
+                            await guild.unban(ban_entry.user, reason="[Abo] Perdón del patrón")
+                            await canal.send(f"✅ {ban_entry.user.name} desbaneado. A ver si ya se porta bien")
                             return
-                    await canal.send("Esa persona no está baneada.")
+                    await canal.send("Ese we ni está baneado, ¿de qué hablas?")
                 except discord.Forbidden:
-                    await canal.send("No tengo perms para desbanear.")
+                    await canal.send("No me dejan desbanear, llora pues")
             else:
-                await canal.send("Uso: `!desbanea @usuario` o `!desbanea ID`")
+                await canal.send("Uso: `!desbanea @usuario` o ID, no soy adivino")
             return
 
-        #!kickea @usuario
         if lower.startswith("!kickea") and message.mentions:
             target = message.mentions[0]
             try:
-                await guild.kick(target, reason="[Abo] Kickead@ por admin")
-                await canal.send(f"👟 {target.name} kickead@. A pensar afuera.")
+                await guild.kick(target, reason="[Abo] Patada del patrón")
+                await canal.send(f"👟 {target.name} pateado pa fuera. Regresa cuando aprendas modales")
             except discord.Forbidden:
-                await canal.send("No tengo perms para kickear.")
+                await canal.send("Quiero kickear pero mis poderes son limitados we")
             return
 
-        #!timeout @usuario [minutos]
         if lower.startswith("!timeout") and message.mentions:
             target = message.mentions[0]
             partes = lower.split()
@@ -247,30 +303,35 @@ async def on_message(message: discord.Message):
                 if p.isdigit():
                     minutos = int(p)
                     break
-            await aplicar_timeout(target, canal, minutos * 60, "orden del admin")
+            await aplicar_timeout(target, canal, minutos * 60, "orden del patrón")
             return
 
-        #!warn @usuario
         if lower.startswith("!warn") and message.mentions:
             target = message.mentions[0]
-            await aplicar_warn(guild, target, canal, "warn manual")
+            await aplicar_warn(guild, target, canal, "warn directo")
             return
 
-        #!warns @usuario
         if lower.startswith("!warns") and message.mentions:
             target = message.mentions[0]
             n = warns[target.id]
-            await canal.send(f"📋 {target.mention} tiene {n} warn(s).")
+            if n == 0:
+                await canal.send(f"📋 {target.mention} está limpio... por ahora 😏")
+            else:
+                await canal.send(f"📋 {target.mention} tiene {n} warn(s). Va que vuela pal lobby")
             return
 
-        #!limpia N
         if lower.startswith("!limpia"):
             partes = lower.split()
             n = 5
             if len(partes) > 1 and partes[1].isdigit():
                 n = min(int(partes[1]), 100)
             borrados = await canal.purge(limit=n + 1)
-            confirmacion = await canal.send(f"🧹 {len(borrados)-1} mensajes borrados.")
+            frases_limpia = [
+                f"🧹 {len(borrados)-1} mensajes alv. De nada",
+                f"🗑️ Limpieza express: {len(borrados)-1} mensajes borrados",
+                f"✨ {len(borrados)-1} mensajes menos. El chat respira"
+            ]
+            confirmacion = await canal.send(random.choice(frases_limpia))
             await asyncio.sleep(4)
             await confirmacion.delete()
             return
@@ -282,11 +343,11 @@ async def on_message(message: discord.Message):
         except:
             pass
         respuesta = await preguntar_ia(
-            f"{autor.display_name} está mandando mensajes rapidísimo",
+            f"{autor.display_name} spamea sin control",
             sistema=SISTEMA_SPAM,
-            fallback_lista=["Relájate, no es una carrera."],
+            fallback_lista=FALLBACKS_SPAM,
             fallback_clave="spam",
-            max_tokens=40,
+            max_tokens=50,
         )
         await canal.send(f"{autor.mention} {respuesta}")
         await aplicar_warn(guild, autor, canal, "spam")
@@ -299,7 +360,7 @@ async def on_message(message: discord.Message):
             await message.delete()
         except:
             pass
-        await canal.send(f"{autor.mention} No mandes links sin permiso.")
+        await canal.send(f"{autor.mention} {fallback_sin_repetir(FALLBACKS_LINK, 'link')}")
         await aplicar_warn(guild, autor, canal, "link sin permiso")
         return
 
@@ -312,11 +373,11 @@ async def on_message(message: discord.Message):
         and cooldown_regaño(autor.id, segundos=30)
     ):
         respuesta = await preguntar_ia(
-            f"'{contenido}' — alguien está gritando con mayúsculas",
+            f"'{contenido}' — alguien grita con mayúsculas",
             sistema=SISTEMA_CAPS,
-            fallback_lista=["Baja el volumen."],
+            fallback_lista=FALLBACKS_CAPS,
             fallback_clave="caps",
-            max_tokens=40,
+            max_tokens=50,
         )
         await canal.send(f"{autor.mention} {respuesta}")
         return
@@ -324,9 +385,17 @@ async def on_message(message: discord.Message):
     # ── MENCIÓN DIRECTA ──────────────────────────────────────────────
     if bot.user.mentioned_in(message):
         texto = re.sub(r"<@!?\d+>", "", contenido).strip()
-        saludos = {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", ""}
+        saludos = {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}
         if texto.lower() in saludos:
-            await canal.send("Qué onda")
+            saludos_respuesta = [
+                "Qué onda",
+                "Qué pedo",
+                "Dime crack",
+                "Aquí andamos",
+                "¿Qué tranza?",
+                "Hablame pues"
+            ]
+            await canal.send(random.choice(saludos_respuesta))
             return
         async with canal.typing():
             respuesta = await preguntar_ia(texto, max_tokens=80)
