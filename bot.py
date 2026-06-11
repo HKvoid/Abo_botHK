@@ -398,7 +398,7 @@ async def on_message(message: discord.Message):
             await canal.send(random.choice(saludos_respuesta))
             return
         async with canal.typing():
-            respuesta = await preguntar_ia(texto, max_tokens=80)
+            respuesta = await preguntar_ia(texto, max_tokens=150)
         await canal.send(respuesta)
 
 # ─────────────────────────────────────────
