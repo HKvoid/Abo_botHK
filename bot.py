@@ -11,6 +11,7 @@ bot = discord.Client(intents=intents)
 
 def preguntar_ia(prompt):
     try:
+        print(f"Llamando Groq con prompt: {prompt[:50]}...") # Log 1
         chat = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -20,12 +21,11 @@ def preguntar_ia(prompt):
             max_tokens=80,
             temperature=0.7
         )
-        print(f"Groq Status: OK")
+        print(f"Groq Status: OK") # Log 2
         return chat.choices[0].message.content[:1800]
     except Exception as e:
-        print(f"Error Groq: {e}")
+        print(f"Error Groq DETALLADO: {type(e).__name__}: {e}") # Log 3 clave
         return "Ando procesando bro"
-
 @bot.event
 async def on_ready():
     print(f"✅ Abo#9097 online con Groq")
