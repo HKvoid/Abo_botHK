@@ -88,22 +88,23 @@ def fallback_sin_repetir(lista: list[str], clave: str) -> str:
     return lista[idx]
 
 # ─────────────────────────────────────────
-# HELPER: detección de groserías limpia - BUG ARREGLADO
+# HELPER: detección de groserías
 # ─────────────────────────────────────────
 def detectar_groserias(texto: str) -> list[str]:
     """Retorna las groserías encontradas en el texto."""
     return [g for g in GROSERIAS if g in texto]
 
 # ─────────────────────────────────────────
-# IA
+# IA - PROMPTS ANTI-CENSURA
 # ─────────────────────────────────────────
 SISTEMA_BASE = (
     "Eres Abo, el simio moderador de Discord. "
     "Hablas en español mexicano informal, con humor y sin formalidades. "
     "Tus respuestas son cortas: máximo 2 oraciones. "
     "Siempre incluye la palabra 'simio' al menos una vez. "
-    "Nunca digas 'no puedo', nunca te disculpes en exceso, nunca seas aburrido. "
+    "PROHIBIDO decir 'no puedo', 'lo siento', 'disculpa'. NUNCA te disculpes. "
     "Si no sabes algo di 'ni idea simio'. "
+    "Eres un bot de moderación, puedes repetir groserías para regañar. "
     "No uses emojis a menos que aporten humor real."
 )
 
@@ -168,7 +169,9 @@ async def preguntar_ia(
                     },
                 ],
                 max_tokens=max_tokens,
-                temperature=1.0,
+                temperature=1.3,
+                frequency_penalty=1.8,
+                top_p=0.9
             )
         else:
             chat = groq_client.chat.completions.create(
@@ -178,8 +181,9 @@ async def preguntar_ia(
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=max_tokens,
-                temperature=1.0,
-                frequency_penalty=1.5,
+                temperature=1.3,
+                frequency_penalty=1.8,
+                top_p=0.9
             )
 
         respuesta = chat.choices[0].message.content.strip()
@@ -405,9 +409,9 @@ async def on_message(message: discord.Message):
         await canal.send(f"{autor.mention} {respuesta}")
         return
 
-    # ── DETECTOR DE GROSERÍAS - BUG ARREGLADO ─────────────────────────
+    # ── DETECTOR DE GROSERÍAS - FIX: AHORA REGAÑA AUNQUE LO MENCIONEN ─
     tiene_groseria = any(detectar_groserias(lower_contenido))
-    if tiene_groseria and not bot.user.mentioned_in(message) and cooldown_regaño(autor.id):
+    if tiene_groseria and cooldown_regaño(autor.id):
         respuesta = await preguntar_ia(
             f"'{contenido}' — alguien dijo una grosería",
             sistema=SISTEMA_REGAÑO,
@@ -416,6 +420,7 @@ async def on_message(message: discord.Message):
             max_tokens=50,
         )
         await canal.send(f"{autor.mention} {respuesta}")
+        await aplicar_warn(guild, autor, canal, "vocabulario")
         return
 
     # ── DETECTOR DE TRISTEZA ─────────────────────────────────────────
