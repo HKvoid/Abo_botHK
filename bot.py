@@ -26,6 +26,7 @@ def preguntar_ia(prompt):
     except Exception as e:
         print(f"Error Groq DETALLADO: {type(e).__name__}: {e}") # Log 3 clave
         return "Ando procesando bro"
+        
 @bot.event
 async def on_ready():
     print(f"✅ Abo#9097 online con Groq")
