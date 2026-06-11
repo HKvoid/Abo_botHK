@@ -302,6 +302,22 @@ async def on_message(message: discord.Message):
     if autor.id == TU_ID:
         lower = contenido.lower()
 
+        #!desbanea @usuario
+if lower.startswith("!desbanea") and message.mentions:
+    target_name = message.mentions[0].name
+    try:
+        # Discord necesita el User object, no Member
+        banned_users = guild.bans()
+        async for ban_entry in banned_users:
+            if ban_entry.user.id == message.mentions[0].id:
+                await guild.unban(ban_entry.user, reason="[Abo] Desbaneado por el simio mayor")
+                await canal.send(f"✅ {ban_entry.user.name} desbaneado simio. Ya puede volver.")
+                return
+        await canal.send("ese simio no está baneado o ya lo saqué de la lista 👀")
+    except discord.Forbidden:
+        await canal.send("no tengo perms para desbanear simio 😤")
+    return
+    
         #!banea @usuario
         if lower.startswith("!banea") and message.mentions:
             target = message.mentions[0]
