@@ -69,9 +69,9 @@ FALLBACKS_GENERALES = [
     "simio dice: meh", "procesa… procesando… nope simio",
 ]
 FALLBACKS_REGAÑO = [
-    "ey limpia esa boca simio 🧼", "eso no se dice simio tsk tsk",
+    "ey limpia esa boca simio 🧼", "eso no se dice simio",
     "cuidado con ese vocabulario simio 👀", "oye oye cálmate simio",
-    "esa boca simio, esa boca 😤",
+    "esa boca simio 😤", "cálmate simio cochino",
 ]
 FALLBACKS_TRISTE = [
     "ánimo simio, esto pasa 🌹", "ya ya simio, aquí andamos 🌹",
@@ -95,7 +95,7 @@ def detectar_groserias(texto: str) -> list[str]:
     return [g for g in GROSERIAS if g in texto]
 
 # ─────────────────────────────────────────
-# IA - PROMPTS ANTI-CENSURA
+# IA - PROMPTS ANTI-CENSURA V5.2
 # ─────────────────────────────────────────
 SISTEMA_BASE = (
     "Eres Abo, el simio moderador de Discord. "
@@ -109,10 +109,10 @@ SISTEMA_BASE = (
 )
 
 SISTEMA_REGAÑO = (
-    "Eres Abo, simio moderador con humor. "
-    "Alguien dijo una grosería. Regáñalo de forma cómica en 1-2 oraciones. "
-    "No seas agresivo ni ofensivo, solo gracioso. "
-    "Incluye 'simio'. Ejemplo: 'ey simio, lávate la boca con jabón industrial'."
+    "Eres Abo, simio moderador. Alguien dijo una grosería. "
+    "Regáñalo en 1 oración corta, máximo 8 palabras. "
+    "Sé directo y gracioso. No uses metáforas raras ni poemas. "
+    "Incluye 'simio'. Ejemplos: 'ey simio, esa boca', 'cálmate simio cochino', 'lávate la boca simio'"
 )
 
 SISTEMA_TRISTE = (
@@ -282,6 +282,17 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.author == bot.user:
         return
 
+    # FIX V5.2: Evitar procesar el mismo mensaje 2 veces en Railway
+    if hasattr(bot, 'procesados') and message.id in bot.procesados:
+        return
+    if not hasattr(bot, 'procesados'):
+        bot.procesados = set()
+    bot.procesados.add(message.id)
+
+    # Limpiar cache cada 100 mensajes pa no tragar RAM
+    if len(bot.procesados) > 100:
+        bot.procesados.clear()
+
     autor = message.author
     guild = message.guild
     canal = message.channel
@@ -409,7 +420,7 @@ async def on_message(message: discord.Message):
         await canal.send(f"{autor.mention} {respuesta}")
         return
 
-    # ── DETECTOR DE GROSERÍAS - FIX: AHORA REGAÑA AUNQUE LO MENCIONEN ─
+    # ── DETECTOR DE GROSERÍAS - FIX V5.2: AHORA REGAÑA CON MENCIÓN ───
     tiene_groseria = any(detectar_groserias(lower_contenido))
     if tiene_groseria and cooldown_regaño(autor.id):
         respuesta = await preguntar_ia(
@@ -417,7 +428,7 @@ async def on_message(message: discord.Message):
             sistema=SISTEMA_REGAÑO,
             fallback_lista=FALLBACKS_REGAÑO,
             fallback_clave="regaño",
-            max_tokens=50,
+            max_tokens=20, # V5.2: Bajado de 50 a 20 pa que no se ponga poético
         )
         await canal.send(f"{autor.mention} {respuesta}")
         await aplicar_warn(guild, autor, canal, "vocabulario")
