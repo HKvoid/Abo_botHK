@@ -15,17 +15,20 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 def preguntar_ia(prompt):
     API_URL = "https://api-inference.huggingface.co/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    
+
     payload = {
         "inputs": f"<|system|>Eres Abo, un bot de Discord empático, además de que eres un moderador que evita que los demás se falten el respeto. Respondes corto, en español, con calidez. Terminas con 🌹 solo si la persona está triste.<|user|>{prompt}<|assistant|>",
         "parameters": {"max_new_tokens": 80, "temperature": 0.7}
     }
-    
+
     try:
         response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+        print(f"HF Status: {response.status_code}") # <-- ESTO NOS DICE SI HF RESPONDIÓ
+        print(f"HF Response: {response.text}") # <-- ESTO NOS DICE QUÉ RESPONDIÓ
         texto = response.json()[0]['generated_text'].split("<|assistant|>")[-1].strip()
         return texto[:1800]
-    except:
+    except Exception as e:
+        print(f"Error HF: {e}") # <-- ESTO NOS DICE POR QUÉ TRONÓ
         return "Ando procesando bro"
 
 @bot.event
