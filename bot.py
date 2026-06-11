@@ -11,25 +11,33 @@ bot = discord.Client(intents=intents)
 
 def preguntar_ia(prompt):
     try:
-        print(f"Llamando Groq con prompt: {prompt[:50]}...") # Log 1
         chat = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "Eres Abo, un bot de Discord empático, moderador. Respondes corto, en español, con calidez. Terminas con 🌹 solo si la persona está triste."},
+                {"role": "system", "content": "Eres Abo, un bot de Discord empático, también eres un moderador del servidor, tu trabajo es evitar que los demás se falten el respeto. Responde en 1 línea máximo, casual, en español latino. Usa 'simio/a' solo 1 vez. Solo pon 🌹 si detectas tristeza. Prohibido repetir palabras o frases."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=80,
-            temperature=0.7
+            max_tokens=60, # Menos tokens = menos chance de repetir
+            temperature=0.3, # Más bajo = más serio, menos loro
+            top_p=0.9,
+            stop=["¿En qué","Hola","simio simio"] # Lo corta si intenta repetir
         )
-        print(f"Groq Status: OK") # Log 2
-        return chat.choices[0].message.content[:1800]
-    except Exception as e:
-        print(f"Error Groq DETALLADO: {type(e).__name__}: {e}") # Log 3 clave
-        return "Ando procesando bro"
+        respuesta = chat.choices[0].message.content.strip()
         
-@bot.event
-async def on_ready():
-    print(f"✅ Abo#9097 online con Groq")
+        # Mata oraciones duplicadas aunque estén pegadas
+        oraciones = respuesta.replace('?','?|').replace('.','.|').split('|')
+        oraciones_unicas = []
+        for o in oraciones:
+            o = o.strip()
+            if o and o not in oraciones_unicas:
+                oraciones_unicas.append(o)
+        
+        respuesta = ' '.join(oraciones_unicas)
+        return respuesta[:1800]
+        
+    except Exception as e:
+        print(f"Error Groq DETALLADO: {type(e).__name__}: {e}")
+        return "Neuronas muertas❌"
 
 @bot.event
 async def on_message(message):
