@@ -18,8 +18,8 @@ MAX_WARNS = 3
 SPAM_LIMITE = 5
 SPAM_VENTANA = 6
 TIMEOUT_SEG = 300
-CAPS_UMBRAL = 0.7
-CAPS_MIN_LEN = 10
+# CAPS_UMBRAL = 0.7 # ELIMINADO - ya no regaña por mayúsculas
+# CAPS_MIN_LEN = 10 # ELIMINADO
 
 # ─────────────────────────────────────────
 # CLIENTE
@@ -61,13 +61,7 @@ FALLBACKS_SPAM = [
     "Calmado Toreto, no es Rápidos y Furiosos",
 ]
 
-FALLBACKS_CAPS = [
-    "NO GRITES QUE ME DESPIERTAS A MI ABUELITA",
-    "¿Se te atoró el BLOQ MAYUS?",
-    "Te escucho desde mi casa bro",
-    "Modo caps: desactivado. De nada.",
-    "¿Todo bien en casa? ¿Por qué gritas?",
-]
+# FALLBACKS_CAPS ELIMINADO - ya no hace falta
 
 FALLBACKS_LINK = [
     "Links sin permiso = ban express pa",
@@ -102,10 +96,7 @@ SISTEMA_SPAM = (
     "Sé sarcástico, usa jerga mexicana. Sin ser grosero de a madres."
 )
 
-SISTEMA_CAPS = (
-    "Eres Abo. Alguien GRITA CON MAYÚSCULAS. Hazle un chiste de que le baje, 1 oración. "
-    "Sarcástico pero que de risa."
-)
+# SISTEMA_CAPS ELIMINADO
 
 SISTEMA_BIENVENIDA = (
     "Eres Abo. Dale bienvenida sarcástica pero chida a alguien nuevo, 1 oración. "
@@ -427,23 +418,8 @@ async def on_message(message: discord.Message):
         await aplicar_warn(guild, autor, canal, "link sin permiso")
         return
 
-    # ── DETECTOR CAPS ────────────────────────────────────────────────
-    letras = [c for c in contenido if c.isalpha()]
-    if (
-        len(contenido) >= CAPS_MIN_LEN
-        and letras
-        and sum(1 for c in letras if c.isupper()) / len(letras) >= CAPS_UMBRAL
-        and cooldown_regaño(autor.id, segundos=30)
-    ):
-        respuesta = await preguntar_ia(
-            f"'{contenido}' — alguien grita con mayúsculas",
-            sistema=SISTEMA_CAPS,
-            fallback_lista=FALLBACKS_CAPS,
-            fallback_clave="caps",
-            max_tokens=50,
-        )
-        await canal.send(f"{autor.mention} {respuesta}")
-        return
+    # ── DETECTOR CAPS ELIMINADO ──────────────────────────────────────
+    # Ya no regaña por mayúsculas, que griten lo que quieran
 
     # ── MENCIÓN DIRECTA ──────────────────────────────────────────────
     if bot.user.mentioned_in(message):
