@@ -115,7 +115,7 @@ SISTEMA_BIENVENIDA = (
 async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 150) -> str:
     try:
         chat = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": sistema},
                 {"role": "user", "content": prompt},
