@@ -12,7 +12,7 @@ from groq import Groq
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = 1180967503682355220 # <-- CAMBIA ESTO POR TU ID REAL O ERES UN LOQUILLO
+TU_ID = 1180967503682355220 # <-- ID
 
 MAX_WARNS = 3
 SPAM_LIMITE = 5
@@ -121,9 +121,9 @@ async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=max_tokens,
-            temperature=0.9, # <-- BÁJALO de 1.4 a 0.9
-            frequency_penalty=1.2, # <-- BÁJALO de 1.8 a 1.2
-            top_p=0.9 # <-- BÁJALO de 0.95 a 0.9
+            temperature=0.9,
+            frequency_penalty=1.2,
+            top_p=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
         respuesta = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', respuesta)
@@ -203,19 +203,83 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    canal = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
-    if canal:
-        bienvenida = await preguntar_ia(
-            f"Saluda a {member.display_name} que acaba de entrar",
-            sistema=SISTEMA_BIENVENIDA,
-            fallback_lista=["Bienvenid@ al desmadre ordenado", "Llegó el nuevo, pórtense bien"],
-            fallback_clave="bienvenida",
-            max_tokens=50
-        )
-        await canal.send(f"👋 {member.mention} {bienvenida}")
+    # Auto-rol al entrar
+    rol = discord.utils.get(member.guild.roles, name="Miembro")
+    if rol:
+        try:
+            await member.add_roles(rol, reason="Auto-rol de Abo")
+        except:
+            pass
+
+    # Busca canal #bienvenidas, si no existe usa general o sistema
+    canal = discord.utils.get(member.guild.text_channels, name="bienvenidas")
+    if not canal:
+        canal = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
+    if not canal:
+        return
+
+    bienvenida = await preguntar_ia(
+        f"Saluda a {member.display_name} que acaba de entrar a LatamOS",
+        sistema=SISTEMA_BIENVENIDA,
+        fallback_lista=["Bienvenid@ al desmadre ordenado", "Llegó el nuevo, pórtense bien", "Otro más pal mame"],
+        fallback_clave="bienvenida",
+        max_tokens=50
+    )
+
+    # Embed mamalón
+    embed = discord.Embed(
+        title="🎉 Nuevo recluta en LatamOS",
+        description=f"{member.mention} {bienvenida}",
+        color=0x00BFFF
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Miembro #{len(member.guild.members)} | Powered by Abo")
+    await canal.send(embed=embed)
 
 @bot.event
 async def on_message(message: discord.Message):
+    # ── COMANDOS DESDE DM SOLO PA TI ───────────────────────────────
+    if isinstance(message.channel, discord.DMChannel) and message.author.id == TU_ID:
+        if message.content.startswith("say "):
+            partes = message.content.split(" ", 2)
+            if len(partes) < 3:
+                await message.channel.send("Uso: `say general tu mensaje` we")
+                return
+
+            canal_nombre = partes[1].replace("#", "")
+            texto = partes[2]
+
+            canal_obj = None
+            server_obj = None
+            for guild in bot.guilds:
+                canal_obj = discord.utils.get(guild.text_channels, name=canal_nombre)
+                if canal_obj:
+                    server_obj = guild
+                    break
+
+            if canal_obj:
+                try:
+                    await canal_obj.send(texto)
+                    await message.channel.send(f"✅ Enviado a #{canal_obj.name} en **{server_obj.name}**")
+                except discord.Forbidden:
+                    await message.channel.send("❌ No tengo permisos pa escribir ahí")
+            else:
+                await message.channel.send(f"❌ No encontré el canal `{canal_nombre}`")
+            return
+
+        if message.content.lower() == "canales":
+            lista = []
+            for guild in bot.guilds:
+                for canal in guild.text_channels:
+                    lista.append(f"`{canal.name}` → {guild.name}")
+            if lista:
+                texto = "**Canales disponibles:**\n" + "\n".join(lista[:25])
+                await message.channel.send(texto)
+            else:
+                await message.channel.send("No estoy en ningún server we")
+            return
+
+    # ── IGNORA BOTS Y DUPLICADOS ──────────────────────────────────
     if message.author.bot or message.author == bot.user:
         return
 
