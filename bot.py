@@ -408,16 +408,7 @@ async def on_message(message: discord.Message):
         return
 
     # ── ANTI-LINKS ───────────────────────────────────────────────────
-    es_mod = isinstance(autor, discord.Member) and autor.guild_permissions.manage_messages
-    if not es_mod and LINK_REGEX.search(contenido):
-        try:
-            await message.delete()
-        except:
-            pass
-        await canal.send(f"{autor.mention} {fallback_sin_repetir(FALLBACKS_LINK, 'link')}")
-        await aplicar_warn(guild, autor, canal, "link sin permiso")
-        return
-
+#NADA XD
     # ── DETECTOR CAPS ELIMINADO ──────────────────────────────────────
     # Ya no regaña por mayúsculas, que griten lo que quieran
 
