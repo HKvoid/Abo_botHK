@@ -13,8 +13,8 @@ TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220 # <-- ID
 
-CANAL_VERIFICACION = "verificación" # Cambia el nombre si tu canal se llama diferente
-ROL_VERIFICADO = "Miembro" # Rol que se da al presentarse
+CANAL_VERIFICACION = "verificación"
+ROL_VERIFICADO = "Miembro"
 
 # ─────────────────────────────────────────
 # CLIENTE
@@ -108,7 +108,6 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    # Busca canal de verificación
     canal = discord.utils.get(member.guild.text_channels, name=CANAL_VERIFICACION)
     if not canal:
         print(f"[Abo] No encontré el canal #{CANAL_VERIFICACION}. Crea uno we")
@@ -122,25 +121,21 @@ async def on_member_join(member: discord.Member):
         max_tokens=50
     )
 
-    # Embed de verificación
+    # Embed de verificación CON FORMATO INCLUIDO
     embed = discord.Embed(
         title="🔒 Verificación de LatamOS",
-        description=f"{member.mention} {bienvenida}\n\n**╭──── ✦ Presentación ✦ ────╮
+        description=f"""{member.mention} {bienvenida}
 
-👤 Nombre: Catalina
-🎂 Edad: 18
-🌍 País: Mexico 
-🎮 Juegos favoritos: CODM 
-🎵 Música favorita: $uicideboy$
-🎨 Hobbies: Dormir y pasar tiempo con mi hija
+**─── ✦ Copia y llena esto ✦ ───**
+👤 **Nombre:** 
+🎂 **Edad:** 
+🌎 **País:** 
+🎮 **Juegos favoritos:** 
+🎵 **Música favorita:** 
+😄 **Hobbies:** 
+💬 **Sobre mí:** 
 
-💬 Sobre mí: Me gusta hacer amig@s para jugar, hacer racha xd y pues asi soy amigable buena onda y me gusta el wax JAJSSJAJSJS
-
-
-⭐ Dato curioso:
-____________________
-
-╰──── ✦ Bienvenido/a ✦ ────╯**",
+**─── ✦ Bienvenido/a ✦ ───**""",
         color=0xFF4500
     )
     embed.set_thumbnail(url=member.display_avatar.url)
@@ -198,11 +193,9 @@ async def on_message(message: discord.Message):
     if message.channel.name == CANAL_VERIFICACION and not message.author.guild_permissions.administrator:
         rol_verificado = discord.utils.get(message.guild.roles, name=ROL_VERIFICADO)
 
-        # Si ya tiene el rol, no hacer nada
         if rol_verificado in message.author.roles:
             pass
         else:
-            # Si el mensaje tiene más de 10 caracteres, lo tomamos como presentación
             if len(message.content.strip()) > 10:
                 if rol_verificado:
                     try:
@@ -318,7 +311,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"❌ No encontré el rol `{ROL_VERIFICADO}`")
             return
 
-        # ── DAR ROL A TODOS - VA PRIMERO PA QUE NO CHOQUE ─────────
         if lower.startswith("!addrolall"):
             partes = message.content.split(" ", 1)
             if len(partes) < 2:
@@ -341,14 +333,13 @@ async def on_message(message: discord.Message):
                         try:
                             await miembro.add_roles(rol, reason=f"Rol masivo a todos por {message.author.name}")
                             contador += 1
-                            await asyncio.sleep(1) # Pa no saturar la API de Discord
+                            await asyncio.sleep(1)
                         except:
                             fallos += 1
 
             await message.channel.send(f"✅ Listo. Rol `{rol.name}` dado a {contador} usuarios. Fallos: {fallos}")
             return
 
-        # ── DAR ROL A VARIOS ──────────────────────────────────────
         if lower.startswith("!addrol") or lower.startswith("!darrol"):
             partes = message.content.split()
             if len(partes) < 3 or not message.mentions:
@@ -383,7 +374,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"❌ No pude dárselo a: {', '.join(fallos)}. Revisa mis permisos")
             return
 
-        # ── QUITAR ROL A VARIOS ───────────────────────────────────
         if lower.startswith("!delrol") or lower.startswith("!quitarrol"):
             partes = message.content.split()
             if len(partes) < 3 or not message.mentions:
