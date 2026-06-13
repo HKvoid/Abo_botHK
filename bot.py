@@ -125,7 +125,22 @@ async def on_member_join(member: discord.Member):
     # Embed de verificación
     embed = discord.Embed(
         title="🔒 Verificación de LatamOS",
-        description=f"{member.mention} {bienvenida}\n\n**Escribe una presentación corta:**\nNombre, edad, de dónde eres, a qué vienes.",
+        description=f"{member.mention} {bienvenida}\n\n**╭──── ✦ Presentación ✦ ────╮
+
+👤 Nombre: Catalina
+🎂 Edad: 18
+🌍 País: Mexico 
+🎮 Juegos favoritos: CODM 
+🎵 Música favorita: $uicideboy$
+🎨 Hobbies: Dormir y pasar tiempo con mi hija
+
+💬 Sobre mí: Me gusta hacer amig@s para jugar, hacer racha xd y pues asi soy amigable buena onda y me gusta el wax JAJSSJAJSJS
+
+
+⭐ Dato curioso:
+____________________
+
+╰──── ✦ Bienvenido/a ✦ ────╯**",
         color=0xFF4500
     )
     embed.set_thumbnail(url=member.display_avatar.url)
