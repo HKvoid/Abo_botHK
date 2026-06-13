@@ -3,8 +3,7 @@ import os
 import re
 import random
 import asyncio
-from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import timezone
 from groq import Groq
 
 # ─────────────────────────────────────────
@@ -14,12 +13,8 @@ TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220 # <-- ID
 
-MAX_WARNS = 3
-SPAM_LIMITE = 5
-SPAM_VENTANA = 6
-TIMEOUT_SEG = 300
-# CAPS_UMBRAL = 0.7 # ELIMINADO - ya no regaña por mayúsculas
-# CAPS_MIN_LEN = 10 # ELIMINADO
+CANAL_VERIFICACION = "✨𝒫𝓇𝑒𝓈𝑒𝓃𝓉𝒶𝒸𝒾ó𝓃✨" # Cambia el nombre si tu canal se llama diferente
+ROL_VERIFICADO = "MemberLT" # Rol que se da al presentarse
 
 # ─────────────────────────────────────────
 # CLIENTE
@@ -32,17 +27,8 @@ intents.members = True
 bot = discord.Client(intents=intents)
 
 # ─────────────────────────────────────────
-# ESTADO EN MEMORIA
+# LISTAS DE RESPUESTAS
 # ─────────────────────────────────────────
-warns: dict[int, int] = defaultdict(int)
-spam_tracker: dict[int, deque] = defaultdict(deque)
-ultimo_regaño: dict[int, datetime] = {}
-
-# ─────────────────────────────────────────
-# LISTAS DE MODERACIÓN
-# ─────────────────────────────────────────
-LINK_REGEX = re.compile(r'(https?://|discord\.gg/|bit\.ly/|t\.me/)', re.IGNORECASE)
-
 FALLBACKS_GENERALES = [
     "¿Me hablaste o fue el viento?",
     "Error 404: Cerebro no encontrado",
@@ -51,23 +37,6 @@ FALLBACKS_GENERALES = [
     "Simón que sí... ah no, no entendí",
     "Me dio amnesia temporal",
     "Pregúntale a Google, yo toy ocupado",
-]
-
-FALLBACKS_SPAM = [
-    "Bájale a tu pinga, digo, a tus mensajes",
-    "¿Tienes Parkinson en los dedos o qué?",
-    "El chat no es metralladora mijo",
-    "Respira, cuenta hasta 10, luego escribe",
-    "Calmado Toreto, no es Rápidos y Furiosos",
-]
-
-# FALLBACKS_CAPS ELIMINADO - ya no hace falta
-
-FALLBACKS_LINK = [
-    "Links sin permiso = ban express pa",
-    "¿Qué es eso, un virus de 2008?",
-    "Guarda tu spam pa otro lado",
-    "Ni que fuera mercado libre pa tus links",
 ]
 
 ultimo_fallback: dict[str, int] = {}
@@ -83,7 +52,7 @@ def fallback_sin_repetir(lista: list[str], clave: str) -> str:
 # IA - PROMPTS CON HUMOR
 # ─────────────────────────────────────────
 SISTEMA_BASE = (
-    "Eres Abo, moderador de Discord mexicano. "
+    "Eres Abo, bot de Discord mexicano. "
     "Respondes en máximo 2 oraciones cortas. "
     "Usa humor y jerga: 'we', 'mijo', 'nmms', 'pa'. "
     "Sé sarcástico pero COHERENTE. No digas cosas sin sentido. "
@@ -91,16 +60,14 @@ SISTEMA_BASE = (
     "No te metas con mamás. No asumas género. No digas 'simio'."
 )
 
-SISTEMA_SPAM = (
-    "Eres Abo. Alguien spamea como loco. Burlate de él en 1 oración. "
-    "Sé sarcástico, usa jerga mexicana. Sin ser grosero de a madres."
-)
-
-# SISTEMA_CAPS ELIMINADO
-
 SISTEMA_BIENVENIDA = (
     "Eres Abo. Dale bienvenida sarcástica pero chida a alguien nuevo, 1 oración. "
-    "Hazle saber que aquí moderas tú. Con humor mexicano."
+    "Dile que se presente en este canal pa darle acceso. Con humor mexicano."
+)
+
+SISTEMA_VERIFICADO = (
+    "Eres Abo. Alguien acaba de presentarse y lo verificaste. Dale bienvenida al server, 1 oración. "
+    "Sé sarcástico pero buena onda. Con jerga mexicana."
 )
 
 async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista: list[str] = FALLBACKS_GENERALES, fallback_clave: str = "general", max_tokens: int = 150) -> str:
@@ -126,105 +93,43 @@ async def preguntar_ia(prompt: str, sistema: str = SISTEMA_BASE, fallback_lista:
         return fallback_sin_repetir(fallback_lista, fallback_clave)
 
 # ─────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────
-def cooldown_regaño(user_id: int, segundos: int = 10) -> bool:
-    ahora = datetime.now(timezone.utc)
-    ultimo = ultimo_regaño.get(user_id)
-    if ultimo and (ahora - ultimo).total_seconds() < segundos:
-        return False
-    ultimo_regaño[user_id] = ahora
-    return True
-
-def registrar_spam(user_id: int) -> bool:
-    ahora = datetime.now(timezone.utc)
-    cola = spam_tracker[user_id]
-    while cola and (ahora - cola[0]).total_seconds() > SPAM_VENTANA:
-        cola.popleft()
-    cola.append(ahora)
-    return len(cola) >= SPAM_LIMITE
-
-async def aplicar_warn(guild: discord.Guild, usuario: discord.Member, canal: discord.TextChannel, motivo: str):
-    warns[usuario.id] += 1
-    n = warns[usuario.id]
-    if n >= MAX_WARNS:
-        try:
-            await usuario.kick(reason=f"[Abo] {MAX_WARNS} warns: {motivo}")
-            warns[usuario.id] = 0
-            respuestas_kick = [
-                f"🦍 {usuario.mention} juntó {MAX_WARNS} strikes... y se fue alv",
-                f"✈️ {usuario.mention} tiene boleto directo pa fuera. {MAX_WARNS} warns papá",
-                f"💀 RIP {usuario.mention}. Causa de muerte: {MAX_WARNS} warns"
-            ]
-            await canal.send(random.choice(respuestas_kick))
-        except discord.Forbidden:
-            await canal.send("Quiero kickear pero Discord me tiene en modo espectador nmms")
-    else:
-        restantes = MAX_WARNS - n
-        emojis = ["⚠️", "🚨", "👮", "📢"]
-        await canal.send(f"{random.choice(emojis)} {usuario.mention} warn #{n}. Te quedan {restantes} vidas, úsalas bien.")
-
-async def aplicar_timeout(usuario: discord.Member, canal: discord.TextChannel, segundos: int, motivo: str):
-    try:
-        hasta = discord.utils.utcnow() + timedelta(seconds=segundos)
-        await usuario.timeout(hasta, reason=f"[Abo] {motivo}")
-        minutos = segundos // 60
-        frases_timeout = [
-            f"🔇 {usuario.mention} te fuiste {minutos} min al rincón de pensar. Motivo: {motivo}",
-            f"🤐 {usuario.mention} muteado {minutos} min. Medita tus pecados: {motivo}",
-            f"⏰ {usuario.mention} timeout de {minutos} min. Regresas cuando aprendas: {motivo}"
-        ]
-        await canal.send(random.choice(frases_timeout))
-    except discord.Forbidden:
-        await canal.send("Quiero mutear pero no me dejan. Discord, déjame ser tóxico agusto")
-
-# ─────────────────────────────────────────
 # EVENTOS
 # ─────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"[Abo] Vivo y coleando: {bot.user} | Servidores: {len(bot.guilds)}")
     estados = [
-        "sus mensajes turbios",
-        "que no hagan desmadre",
-        "el orden con humor",
-        "que no spameen"
+        "las verificaciones",
+        "que se presenten",
+        "la puerta del server",
+        "quién entra y quién no"
     ]
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=random.choice(estados)))
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    # Auto-rol al entrar
-    rol = discord.utils.get(member.guild.roles, name="Miembro")
-    if rol:
-        try:
-            await member.add_roles(rol, reason="Auto-rol de Abo")
-        except:
-            pass
-
-    # Busca canal #bienvenidas, si no existe usa general o sistema
-    canal = discord.utils.get(member.guild.text_channels, name="bienvenidas")
+    # Busca canal de verificación
+    canal = discord.utils.get(member.guild.text_channels, name=CANAL_VERIFICACION)
     if not canal:
-        canal = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
-    if not canal:
+        print(f"[Abo] No encontré el canal #{CANAL_VERIFICACION}. Crea uno we")
         return
 
     bienvenida = await preguntar_ia(
-        f"Saluda a {member.display_name} que acaba de entrar a LatamOS",
+        f"Saluda a {member.display_name} que acaba de entrar y dile que se presente",
         sistema=SISTEMA_BIENVENIDA,
-        fallback_lista=["Bienvenid@ al desmadre ordenado", "Llegó el nuevo, pórtense bien", "Otro más pal mame"],
+        fallback_lista=["Preséntate pa darte acceso we", "¿Quién chingados eres? Preséntate", "Nuevo detectado. Di tu nombre o lárgate"],
         fallback_clave="bienvenida",
         max_tokens=50
     )
 
-    # Embed mamalón
+    # Embed de verificación
     embed = discord.Embed(
-        title="🎉 Nuevo recluta en LatamOS",
-        description=f"{member.mention} {bienvenida}",
-        color=0x00BFFF
+        title="🔒 Verificación de LatamOS",
+        description=f"{member.mention} {bienvenida}\n\n**Escribe una presentación corta:**\nNombre, edad, de dónde eres, a qué vienes.",
+        color=0xFF4500
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_footer(text=f"Miembro #{len(member.guild.members)} | Powered by Abo")
+    embed.set_footer(text="Sin presentación no hay acceso | Powered by Abo")
     await canal.send(embed=embed)
 
 @bot.event
@@ -274,47 +179,77 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.author == bot.user:
         return
 
-    if hasattr(bot, 'procesados') and message.id in bot.procesados:
-        return
-    if not hasattr(bot, 'procesados'):
-        bot.procesados = set()
-    bot.procesados.add(message.id)
-    if len(bot.procesados) > 100:
-        bot.procesados.clear()
+    # ── SISTEMA DE VERIFICACIÓN ───────────────────────────────────
+    if message.channel.name == CANAL_VERIFICACION and not message.author.guild_permissions.administrator:
+        rol_verificado = discord.utils.get(message.guild.roles, name=ROL_VERIFICADO)
 
-    autor = message.author
-    guild = message.guild
-    canal = message.channel
-    contenido = message.content
+        # Si ya tiene el rol, no hacer nada
+        if rol_verificado in message.author.roles:
+            pass
+        else:
+            # Si el mensaje tiene más de 10 caracteres, lo tomamos como presentación
+            if len(message.content.strip()) > 10:
+                if rol_verificado:
+                    try:
+                        await message.author.add_roles(rol_verificado, reason="Verificación completada")
+
+                        aprobado = await preguntar_ia(
+                            f"{message.author.display_name} se presentó diciendo: {message.content}",
+                            sistema=SISTEMA_VERIFICADO,
+                            fallback_lista=[
+                                "Ya estás dentro mijo, no la cagues",
+                                "Verificado. Bienvenido al desmadre",
+                                "Listo, ya eres parte de la banda"
+                            ],
+                            fallback_clave="verificado",
+                            max_tokens=50
+                        )
+
+                        embed = discord.Embed(
+                            title="✅ Verificado",
+                            description=f"{message.author.mention} {aprobado}",
+                            color=0x00FF00
+                        )
+                        embed.set_footer(text=f"Miembro #{len(message.guild.members)} | Ya tienes acceso al server")
+                        await message.channel.send(embed=embed)
+
+                    except discord.Forbidden:
+                        await message.channel.send("❌ No tengo permisos pa darte el rol. Habla con un admin")
+                else:
+                    await message.channel.send(f"❌ No encontré el rol `{ROL_VERIFICADO}`. Créalo we")
+            else:
+                await message.add_reaction("❌")
+                await message.channel.send(f"{message.author.mention} eso no es presentación. Mínimo 10 letras pa", delete_after=5)
+            return
 
     # ── COMANDOS DEL ADMIN ──────────────────────────────────────────
-    if autor.id == TU_ID:
-        lower = contenido.lower()
+    if message.author.id == TU_ID:
+        lower = message.content.lower()
 
         if lower.startswith("!banea"):
             user_id = None
             if message.mentions:
                 user_id = message.mentions[0].id
             else:
-                partes = contenido.split()
+                partes = message.content.split()
                 if len(partes) > 1 and partes[1].isdigit():
                     user_id = int(partes[1])
             if user_id:
                 try:
                     user = await bot.fetch_user(user_id)
-                    await guild.ban(user, reason="[Abo] Orden del patrón")
+                    await message.guild.ban(user, reason="[Abo] Orden del patrón")
                     frases_ban = [
                         f"🔨 {user.name} fue desterrado alv. F",
                         f"💥 {user.name} baneado. Ya no lo verás ni en tus sueños",
                         f"🚀 {user.name} se fue a conocer a su creador"
                     ]
-                    await canal.send(random.choice(frases_ban))
+                    await message.channel.send(random.choice(frases_ban))
                 except discord.Forbidden:
-                    await canal.send("Quiero banear pero Discord dice que no soy tu papá")
+                    await message.channel.send("Quiero banear pero Discord dice que no soy tu papá")
                 except discord.NotFound:
-                    await canal.send("Ese we ni existe, ¿a quién quieres banear?")
+                    await message.channel.send("Ese we ni existe, ¿a quién quieres banear?")
             else:
-                await canal.send("Uso: `!banea @usuario` we, no adivino")
+                await message.channel.send("Uso: `!banea @usuario` we, no adivino")
             return
 
         if lower.startswith("!desbanea"):
@@ -322,56 +257,21 @@ async def on_message(message: discord.Message):
             if message.mentions:
                 user_id = message.mentions[0].id
             else:
-                partes = contenido.split()
+                partes = message.content.split()
                 if len(partes) > 1 and partes[1].isdigit():
                     user_id = int(partes[1])
             if user_id:
                 try:
-                    banned_users = guild.bans()
-                    async for ban_entry in banned_users:
+                    async for ban_entry in message.guild.bans():
                         if ban_entry.user.id == user_id:
-                            await guild.unban(ban_entry.user, reason="[Abo] Perdón del patrón")
-                            await canal.send(f"✅ {ban_entry.user.name} desbaneado. A ver si ya se porta bien")
+                            await message.guild.unban(ban_entry.user, reason="[Abo] Perdón del patrón")
+                            await message.channel.send(f"✅ {ban_entry.user.name} desbaneado. A ver si ya se porta bien")
                             return
-                    await canal.send("Ese we ni está baneado, ¿de qué hablas?")
+                    await message.channel.send("Ese we ni está baneado, ¿de qué hablas?")
                 except discord.Forbidden:
-                    await canal.send("No me dejan desbanear, llora pues")
+                    await message.channel.send("No me dejan desbanear, llora pues")
             else:
-                await canal.send("Uso: `!desbanea @usuario` o ID, no soy adivino")
-            return
-
-        if lower.startswith("!kickea") and message.mentions:
-            target = message.mentions[0]
-            try:
-                await guild.kick(target, reason="[Abo] Patada del patrón")
-                await canal.send(f"👟 {target.name} pateado pa fuera. Regresa cuando aprendas modales")
-            except discord.Forbidden:
-                await canal.send("Quiero kickear pero mis poderes son limitados we")
-            return
-
-        if lower.startswith("!timeout") and message.mentions:
-            target = message.mentions[0]
-            partes = lower.split()
-            minutos = 5
-            for p in partes:
-                if p.isdigit():
-                    minutos = int(p)
-                    break
-            await aplicar_timeout(target, canal, minutos * 60, "orden del patrón")
-            return
-
-        if lower.startswith("!warn") and message.mentions:
-            target = message.mentions[0]
-            await aplicar_warn(guild, target, canal, "warn directo")
-            return
-
-        if lower.startswith("!warns") and message.mentions:
-            target = message.mentions[0]
-            n = warns[target.id]
-            if n == 0:
-                await canal.send(f"📋 {target.mention} está limpio... por ahora 😏")
-            else:
-                await canal.send(f"📋 {target.mention} tiene {n} warn(s). Va que vuela pal lobby")
+                await message.channel.send("Uso: `!desbanea @usuario` o ID, no soy adivino")
             return
 
         if lower.startswith("!limpia"):
@@ -379,42 +279,126 @@ async def on_message(message: discord.Message):
             n = 5
             if len(partes) > 1 and partes[1].isdigit():
                 n = min(int(partes[1]), 100)
-            borrados = await canal.purge(limit=n + 1)
+            borrados = await message.channel.purge(limit=n + 1)
             frases_limpia = [
                 f"🧹 {len(borrados)-1} mensajes alv. De nada",
                 f"🗑️ Limpieza express: {len(borrados)-1} mensajes borrados",
                 f"✨ {len(borrados)-1} mensajes menos. El chat respira"
             ]
-            confirmacion = await canal.send(random.choice(frases_limpia))
+            confirmacion = await message.channel.send(random.choice(frases_limpia))
             await asyncio.sleep(4)
             await confirmacion.delete()
             return
 
-    # ── ANTI-SPAM ────────────────────────────────────────────────────
-    if registrar_spam(autor.id) and cooldown_regaño(autor.id, segundos=15):
-        try:
-            await message.delete()
-        except:
-            pass
-        respuesta = await preguntar_ia(
-            f"{autor.display_name} spamea sin control",
-            sistema=SISTEMA_SPAM,
-            fallback_lista=FALLBACKS_SPAM,
-            fallback_clave="spam",
-            max_tokens=50,
-        )
-        await canal.send(f"{autor.mention} {respuesta}")
-        await aplicar_warn(guild, autor, canal, "spam")
-        return
+        if lower.startswith("!verificar") and message.mentions:
+            target = message.mentions[0]
+            rol_verificado = discord.utils.get(message.guild.roles, name=ROL_VERIFICADO)
+            if rol_verificado:
+                try:
+                    await target.add_roles(rol_verificado, reason="Verificación manual del admin")
+                    await message.channel.send(f"✅ {target.mention} verificado manualmente. Ya tiene acceso")
+                except discord.Forbidden:
+                    await message.channel.send("❌ No tengo permisos pa dar roles")
+            else:
+                await message.channel.send(f"❌ No encontré el rol `{ROL_VERIFICADO}`")
+            return
 
-    # ── ANTI-LINKS ───────────────────────────────────────────────────
-#NADA XD
-    # ── DETECTOR CAPS ELIMINADO ──────────────────────────────────────
-    # Ya no regaña por mayúsculas, que griten lo que quieran
+        # ── NUEVO: DAR ROL A VARIOS ───────────────────────────────
+        if lower.startswith("!addrol") or lower.startswith("!darrol"):
+            partes = message.content.split()
+            if len(partes) < 3 or not message.mentions:
+                await message.channel.send("Uso: `!addrol @user1 @user2 @user3 NombreDelRol` we")
+                return
+
+            nombre_rol = " ".join(partes[1 + len(message.mentions):])
+            if not nombre_rol:
+                await message.channel.send("¿Y el nombre del rol apa? `!addrol @user1 @user2 Miembro`")
+                return
+
+            rol = discord.utils.get(message.guild.roles, name=nombre_rol)
+            if not rol:
+                await message.channel.send(f"❌ No existe el rol `{nombre_rol}`. Checa que esté bien escrito")
+                return
+
+            exitos = []
+            fallos = []
+
+            for user in message.mentions:
+                try:
+                    await user.add_roles(rol, reason=f"Rol masivo por {message.author.name}")
+                    exitos.append(user.mention)
+                except discord.Forbidden:
+                    fallos.append(user.mention)
+                except:
+                    fallos.append(user.mention)
+
+            if exitos:
+                await message.channel.send(f"✅ Rol `{rol.name}` dado a: {', '.join(exitos)}")
+            if fallos:
+                await message.channel.send(f"❌ No pude dárselo a: {', '.join(fallos)}. Revisa mis permisos")
+            return
+
+        # ── NUEVO: QUITAR ROL A VARIOS ────────────────────────────
+        if lower.startswith("!delrol") or lower.startswith("!quitarrol"):
+            partes = message.content.split()
+            if len(partes) < 3 or not message.mentions:
+                await message.channel.send("Uso: `!delrol @user1 @user2 @user3 NombreDelRol` we")
+                return
+
+            nombre_rol = " ".join(partes[1 + len(message.mentions):])
+            rol = discord.utils.get(message.guild.roles, name=nombre_rol)
+            if not rol:
+                await message.channel.send(f"❌ No existe el rol `{nombre_rol}`")
+                return
+
+            exitos = []
+            fallos = []
+            for user in message.mentions:
+                try:
+                    await user.remove_roles(rol, reason=f"Rol quitado por {message.author.name}")
+                    exitos.append(user.mention)
+                except:
+                    fallos.append(user.mention)
+
+            if exitos:
+                await message.channel.send(f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}")
+            if fallos:
+                await message.channel.send(f"❌ No pude quitárselo a: {', '.join(fallos)}")
+            return
+
+        # ── NUEVO: DAR ROL A TODOS ────────────────────────────────
+        if lower.startswith("!addrolall"):
+            partes = message.content.split(" ", 1)
+            if len(partes) < 2:
+                await message.channel.send("Uso: `!addrolall NombreDelRol` we")
+                return
+
+            nombre_rol = partes[1]
+            rol = discord.utils.get(message.guild.roles, name=nombre_rol)
+            if not rol:
+                await message.channel.send(f"❌ No existe el rol `{nombre_rol}`")
+                return
+
+            await message.channel.send(f"⏳ Dándole rol `{rol.name}` a todos... Esto puede tardar")
+            contador = 0
+            fallos = 0
+
+            async with message.channel.typing():
+                for miembro in message.guild.members:
+                    if rol not in miembro.roles and not miembro.bot:
+                        try:
+                            await miembro.add_roles(rol, reason=f"Rol masivo a todos por {message.author.name}")
+                            contador += 1
+                            await asyncio.sleep(1) # Pa no saturar la API
+                        except:
+                            fallos += 1
+
+            await message.channel.send(f"✅ Listo. Rol `{rol.name}` dado a {contador} usuarios. Fallos: {fallos}")
+            return
 
     # ── MENCIÓN DIRECTA ──────────────────────────────────────────────
     if bot.user.mentioned_in(message):
-        texto = re.sub(r"<@!?\d+>", "", contenido).strip()
+        texto = re.sub(r"<@!?\d+>", "", message.content).strip()
         saludos = {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}
         if texto.lower() in saludos:
             saludos_respuesta = [
@@ -425,11 +409,11 @@ async def on_message(message: discord.Message):
                 "¿Qué tranza?",
                 "Hablame pues"
             ]
-            await canal.send(random.choice(saludos_respuesta))
+            await message.channel.send(random.choice(saludos_respuesta))
             return
-        async with canal.typing():
+        async with message.channel.typing():
             respuesta = await preguntar_ia(texto, max_tokens=150)
-        await canal.send(respuesta)
+        await message.channel.send(respuesta)
 
 # ─────────────────────────────────────────
 # ARRANQUE
