@@ -13,8 +13,8 @@ TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220 # <-- ID
 
-CANAL_VERIFICACION = "verificación"
-ROL_VERIFICADO = "Miembro"
+CANAL_VERIFICACION = "✨𝒫𝓇𝑒𝓈𝑒𝓃𝓉𝒶𝒸𝒾ó𝓃✨"
+ROL_VERIFICADO = "MemberLT"
 
 # ─────────────────────────────────────────
 # CLIENTE
