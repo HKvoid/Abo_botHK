@@ -13,8 +13,8 @@ TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220 # <-- ID
 
-CANAL_VERIFICACION = "✨𝒫𝓇𝑒𝓈𝑒𝓃𝓉𝒶𝒸𝒾ó𝓃✨" # Cambia el nombre si tu canal se llama diferente
-ROL_VERIFICADO = "MemberLT" # Rol que se da al presentarse
+CANAL_VERIFICACION = "verificación" # Cambia el nombre si tu canal se llama diferente
+ROL_VERIFICADO = "Miembro" # Rol que se da al presentarse
 
 # ─────────────────────────────────────────
 # CLIENTE
@@ -303,7 +303,37 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"❌ No encontré el rol `{ROL_VERIFICADO}`")
             return
 
-        # ── NUEVO: DAR ROL A VARIOS ───────────────────────────────
+        # ── DAR ROL A TODOS - VA PRIMERO PA QUE NO CHOQUE ─────────
+        if lower.startswith("!addrolall"):
+            partes = message.content.split(" ", 1)
+            if len(partes) < 2:
+                await message.channel.send("Uso: `!addrolall NombreDelRol` we")
+                return
+
+            nombre_rol = partes[1]
+            rol = discord.utils.get(message.guild.roles, name=nombre_rol)
+            if not rol:
+                await message.channel.send(f"❌ No existe el rol `{nombre_rol}`")
+                return
+
+            await message.channel.send(f"⏳ Dándole rol `{rol.name}` a todos... Esto puede tardar")
+            contador = 0
+            fallos = 0
+
+            async with message.channel.typing():
+                for miembro in message.guild.members:
+                    if rol not in miembro.roles and not miembro.bot:
+                        try:
+                            await miembro.add_roles(rol, reason=f"Rol masivo a todos por {message.author.name}")
+                            contador += 1
+                            await asyncio.sleep(1) # Pa no saturar la API de Discord
+                        except:
+                            fallos += 1
+
+            await message.channel.send(f"✅ Listo. Rol `{rol.name}` dado a {contador} usuarios. Fallos: {fallos}")
+            return
+
+        # ── DAR ROL A VARIOS ──────────────────────────────────────
         if lower.startswith("!addrol") or lower.startswith("!darrol"):
             partes = message.content.split()
             if len(partes) < 3 or not message.mentions:
@@ -338,7 +368,7 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"❌ No pude dárselo a: {', '.join(fallos)}. Revisa mis permisos")
             return
 
-        # ── NUEVO: QUITAR ROL A VARIOS ────────────────────────────
+        # ── QUITAR ROL A VARIOS ───────────────────────────────────
         if lower.startswith("!delrol") or lower.startswith("!quitarrol"):
             partes = message.content.split()
             if len(partes) < 3 or not message.mentions:
@@ -364,36 +394,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}")
             if fallos:
                 await message.channel.send(f"❌ No pude quitárselo a: {', '.join(fallos)}")
-            return
-
-        # ── NUEVO: DAR ROL A TODOS ────────────────────────────────
-        if lower.startswith("!addrolall"):
-            partes = message.content.split(" ", 1)
-            if len(partes) < 2:
-                await message.channel.send("Uso: `!addrolall NombreDelRol` we")
-                return
-
-            nombre_rol = partes[1]
-            rol = discord.utils.get(message.guild.roles, name=nombre_rol)
-            if not rol:
-                await message.channel.send(f"❌ No existe el rol `{nombre_rol}`")
-                return
-
-            await message.channel.send(f"⏳ Dándole rol `{rol.name}` a todos... Esto puede tardar")
-            contador = 0
-            fallos = 0
-
-            async with message.channel.typing():
-                for miembro in message.guild.members:
-                    if rol not in miembro.roles and not miembro.bot:
-                        try:
-                            await miembro.add_roles(rol, reason=f"Rol masivo a todos por {message.author.name}")
-                            contador += 1
-                            await asyncio.sleep(1) # Pa no saturar la API
-                        except:
-                            fallos += 1
-
-            await message.channel.send(f"✅ Listo. Rol `{rol.name}` dado a {contador} usuarios. Fallos: {fallos}")
             return
 
     # ── MENCIÓN DIRECTA ──────────────────────────────────────────────
