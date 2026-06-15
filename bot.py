@@ -3,6 +3,7 @@ import os
 import re
 import random
 import asyncio
+import sqlite3
 from datetime import timedelta
 from groq import Groq
 
@@ -12,7 +13,7 @@ from groq import Groq
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220
-ROL_MIEMBRO = "MemberLT" # Rol pa scan
+ROL_MIEMBRO = "MemberLT"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -20,6 +21,44 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = discord.Client(intents=intents)
+
+# ─────────────────────────────────────────
+# MEMORIA CON SQLITE
+# ─────────────────────────────────────────
+db = sqlite3.connect("abo_memoria.db")
+cursor = db.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS memoria (
+    user_id INTEGER,
+    canal_id INTEGER,
+    rol TEXT,
+    contenido TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+""")
+db.commit()
+
+def guardar_mensaje(user_id, canal_id, rol, contenido):
+    cursor.execute("INSERT INTO memoria (user_id, canal_id, rol, contenido) VALUES (?,?,?,?)",
+                   (user_id, canal_id, rol, contenido))
+    # Solo guarda últimos 10 mensajes por user-canal pa no llenar
+    cursor.execute("""
+        DELETE FROM memoria WHERE rowid NOT IN (
+            SELECT rowid FROM memoria 
+            WHERE user_id =? AND canal_id =?
+            ORDER BY timestamp DESC LIMIT 10
+        ) AND user_id =? AND canal_id =?
+    """, (user_id, canal_id, user_id, canal_id))
+    db.commit()
+
+def obtener_historial(user_id, canal_id, limite=8):
+    cursor.execute("""
+        SELECT rol, contenido FROM memoria 
+        WHERE user_id =? AND canal_id =?
+        ORDER BY timestamp DESC LIMIT?
+    """, (user_id, canal_id, limite))
+    historial = cursor.fetchall()
+    return list(reversed(historial)) # Del más viejo al más nuevo
 
 # ─────────────────────────────────────────
 # PERSONALIDAD ABO
@@ -30,23 +69,38 @@ SISTEMA_ABO = (
     "Usa humor y jerga: 'we', 'mijo', 'nmms', 'pa'. "
     "Sé sarcástico pero COHERENTE. No digas cosas sin sentido. "
     "PROHIBIDO decir 'no puedo', 'lo siento'. Si no sabes di 'ni idea we'. "
-    "No te metas con mamás. No asumas género. No digas 'simio'."
+    "No te metas con mamás. No asumas género. No digas 'simio'. "
+    "Usa el historial de conversación para tener contexto."
 )
 
-async def preguntar_ia(prompt: str) -> str:
+async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
+        # Agarra historial
+        historial = obtener_historial(user_id, canal_id)
+        mensajes = [{"role": "system", "content": SISTEMA_ABO}]
+        
+        # Mete historial a los mensajes
+        for rol, contenido in historial:
+            mensajes.append({"role": rol, "content": contenido})
+        
+        # Mete mensaje actual
+        mensajes.append({"role": "user", "content": prompt})
+        
         chat = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SISTEMA_ABO},
-                {"role": "user", "content": prompt},
-            ],
+            messages=mensajes,
             max_tokens=150,
             temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
+        
+        # Guarda en memoria
+        guardar_mensaje(user_id, canal_id, "user", prompt)
+        guardar_mensaje(user_id, canal_id, "assistant", respuesta)
+        
         return respuesta if respuesta else "Ni idea we"
-    except:
+    except Exception as e:
+        print(f"[Groq Error] {e}")
         return "Me bugueé we"
 
 # ─────────────────────────────────────────
@@ -54,7 +108,7 @@ async def preguntar_ia(prompt: str) -> str:
 # ─────────────────────────────────────────
 @bot.event
 async def on_ready():
-    print(f"[Abo] Online: {bot.user}")
+    print(f"[Abo] Online: {bot.user} | Memoria activa")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="LatamOS"))
 
 @bot.event
@@ -92,16 +146,16 @@ async def on_message(message: discord.Message):
             else:
                 await message.channel.send(f"❌ No encontré el canal `{canal_nombre}`")
             return
-        return # Si es DM tuyo y no es!say, no hace nada más
+        return
 
-    # 1. PERSONALIDAD - SI LA MENCIONAN
+    # 1. PERSONALIDAD - SI LA MENCIONAN CON MEMORIA
     if bot.user.mentioned_in(message):
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
         if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
             await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
             return
         async with message.channel.typing():
-            respuesta = await preguntar_ia(texto)
+            respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
         await message.channel.send(respuesta)
 
     # 2. BANEAR
@@ -250,5 +304,12 @@ async def on_message(message: discord.Message):
         if exitos: msg += f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}\n"
         if fallos: msg += f"❌ No pude quitárselo a: {', '.join(fallos)}"
         await message.channel.send(msg)
+
+    # 10. BORRAR MEMORIA
+    elif lower.startswith("!olvidame"):
+        cursor.execute("DELETE FROM memoria WHERE user_id =? AND canal_id =?", 
+                      (message.author.id, message.channel.id))
+        db.commit()
+        await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
 
 bot.run(TOKEN)
