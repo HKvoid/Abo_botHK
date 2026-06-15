@@ -62,6 +62,38 @@ async def on_message(message: discord.Message):
     if message.author.bot: return
     lower = message.content.lower()
 
+    # ── COMANDO SAY POR DM SOLO PA TI ───────────────────────────────
+    if isinstance(message.channel, discord.DMChannel) and message.author.id == TU_ID:
+        if lower.startswith("!say "):
+            partes = message.content.split(" ", 2)
+            if len(partes) < 3:
+                await message.channel.send("Uso: `!say #nombre-canal tu mensaje` we")
+                return
+
+            canal_nombre = partes[1].replace("#", "").replace("💬", "")
+            texto = partes[2]
+
+            canal_obj = None
+            server_obj = None
+            for guild in bot.guilds:
+                for canal in guild.text_channels:
+                    if canal_nombre.lower() in canal.name.lower():
+                        canal_obj = canal
+                        server_obj = guild
+                        break
+                if canal_obj: break
+
+            if canal_obj:
+                try:
+                    await canal_obj.send(texto)
+                    await message.channel.send(f"✅ Enviado a #{canal_obj.name} en **{server_obj.name}**")
+                except discord.Forbidden:
+                    await message.channel.send("❌ No tengo permisos pa escribir ahí we")
+            else:
+                await message.channel.send(f"❌ No encontré el canal `{canal_nombre}`")
+            return
+        return # Si es DM tuyo y no es!say, no hace nada más
+
     # 1. PERSONALIDAD - SI LA MENCIONAN
     if bot.user.mentioned_in(message):
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
@@ -145,7 +177,7 @@ async def on_message(message: discord.Message):
         else:
             await message.channel.send("No hay fantasmas we, todos activos 🔥")
 
-    # 6. SAY
+    # 6. SAY EN SERVER
     elif lower.startswith("!say "):
         texto = message.content[5:]
         await message.delete()
