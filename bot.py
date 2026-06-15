@@ -41,7 +41,6 @@ db.commit()
 def guardar_mensaje(user_id, canal_id, rol, contenido):
     cursor.execute("INSERT INTO memoria (user_id, canal_id, rol, contenido) VALUES (?,?,?,?)",
                    (user_id, canal_id, rol, contenido))
-    # Solo guarda últimos 10 mensajes por user-canal pa no llenar
     cursor.execute("""
         DELETE FROM memoria WHERE rowid NOT IN (
             SELECT rowid FROM memoria 
@@ -58,7 +57,7 @@ def obtener_historial(user_id, canal_id, limite=8):
         ORDER BY timestamp DESC LIMIT?
     """, (user_id, canal_id, limite))
     historial = cursor.fetchall()
-    return list(reversed(historial)) # Del más viejo al más nuevo
+    return list(reversed(historial))
 
 # ─────────────────────────────────────────
 # PERSONALIDAD ABO
@@ -75,15 +74,12 @@ SISTEMA_ABO = (
 
 async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
-        # Agarra historial
         historial = obtener_historial(user_id, canal_id)
         mensajes = [{"role": "system", "content": SISTEMA_ABO}]
         
-        # Mete historial a los mensajes
         for rol, contenido in historial:
             mensajes.append({"role": rol, "content": contenido})
         
-        # Mete mensaje actual
         mensajes.append({"role": "user", "content": prompt})
         
         chat = groq_client.chat.completions.create(
@@ -94,7 +90,6 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         )
         respuesta = chat.choices[0].message.content.strip()
         
-        # Guarda en memoria
         guardar_mensaje(user_id, canal_id, "user", prompt)
         guardar_mensaje(user_id, canal_id, "assistant", respuesta)
         
@@ -146,6 +141,47 @@ async def on_message(message: discord.Message):
             else:
                 await message.channel.send(f"❌ No encontré el canal `{canal_nombre}`")
             return
+        return
+
+    # 0. HELP / CMD
+    if lower in {"!help", "!cmd"}:
+        embed = discord.Embed(
+            title="🔥 Comandos de Abo",
+            description="Esto es lo que sé hacer mijo",
+            color=0x00ff00
+        )
+        embed.add_field(
+            name="💬 Chat con IA",
+            value="`@Abo tu pregunta` - Háblame y te respondo con memoria",
+            inline=False
+        )
+        embed.add_field(
+            name="🔨 Moderación",
+            value="`!banea @user razón` - Destierra alv\n`!mutea @user 10m` - Silencia por tiempo\n`!explota @user` - Lo banea con estilo",
+            inline=False
+        )
+        embed.add_field(
+            name="🧹 Limpieza",
+            value="`!limpia 10` - Borra 10 mensajes\n`!scan` - Busca fantasmas con 0 mensajes",
+            inline=False
+        )
+        embed.add_field(
+            name="👥 Roles",
+            value="`!addrol @user1 @user2 Rol` - Da rol a varios\n`!delrol @user1 @user2 Rol` - Quita rol a varios",
+            inline=False
+        )
+        embed.add_field(
+            name="🧠 Memoria",
+            value="`!olvidame` - Borro lo que recuerdo de ti en este canal",
+            inline=False
+        )
+        embed.add_field(
+            name="💬 Otros",
+            value="`!say texto` - Yo digo lo que escribas\n`!help` / `!cmd` - Esta lista",
+            inline=False
+        )
+        embed.set_footer(text="Solo el admin puede usar!say por DM pa postear en canales")
+        await message.channel.send(embed=embed)
         return
 
     # 1. PERSONALIDAD - SI LA MENCIONAN CON MEMORIA
