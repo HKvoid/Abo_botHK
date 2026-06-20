@@ -1,4 +1,4 @@
-tuimport discord
+import discord
 import os
 import re
 import random
@@ -15,12 +15,26 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220
 ROL_MIEMBRO = "MemberLT"
 
+# ROLES QUE PUEDEN USAR COMANDOS - PON AQUÍ LOS NOMBRES EXACTOS
+ROLES_COMANDOS = ["Admin", "Mod", "Semi Admin", "ViceRoot", "Root", "SemiMod"] # <-- Edita esto we
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = discord.Client(intents=intents)
+
+# ─────────────────────────────────────────
+# FUNCIÓN PA CHECAR PERMISOS DE COMANDOS
+# ─────────────────────────────────────────
+def puede_usar_comandos(member: discord.Member) -> bool:
+    """Checa si el user puede usar comandos"""
+    if member.id == TU_ID: # Tú siempre puedes we
+        return True
+    if isinstance(member, discord.User): # Por si es DM
+        return False
+    return any(rol.name in ROLES_COMANDOS for rol in member.roles)
 
 # ─────────────────────────────────────────
 # MEMORIA CON SQLITE
@@ -43,7 +57,7 @@ def guardar_mensaje(user_id, canal_id, rol, contenido):
                    (user_id, canal_id, rol, contenido))
     cursor.execute("""
         DELETE FROM memoria WHERE rowid NOT IN (
-            SELECT rowid FROM memoria 
+            SELECT rowid FROM memoria
             WHERE user_id =? AND canal_id =?
             ORDER BY timestamp DESC LIMIT 10
         ) AND user_id =? AND canal_id =?
@@ -52,7 +66,7 @@ def guardar_mensaje(user_id, canal_id, rol, contenido):
 
 def obtener_historial(user_id, canal_id, limite=8):
     cursor.execute("""
-        SELECT rol, contenido FROM memoria 
+        SELECT rol, contenido FROM memoria
         WHERE user_id =? AND canal_id =?
         ORDER BY timestamp DESC LIMIT?
     """, (user_id, canal_id, limite))
@@ -76,12 +90,12 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
         historial = obtener_historial(user_id, canal_id)
         mensajes = [{"role": "system", "content": SISTEMA_ABO}]
-        
+
         for rol, contenido in historial:
             mensajes.append({"role": rol, "content": contenido})
-        
+
         mensajes.append({"role": "user", "content": prompt})
-        
+
         chat = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=mensajes,
@@ -89,10 +103,10 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
             temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
-        
+
         guardar_mensaje(user_id, canal_id, "user", prompt)
         guardar_mensaje(user_id, canal_id, "assistant", respuesta)
-        
+
         return respuesta if respuesta else "Ni idea we"
     except Exception as e:
         print(f"[Groq Error] {e}")
@@ -104,6 +118,7 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
 @bot.event
 async def on_ready():
     print(f"[Abo] Online: {bot.user} | Memoria activa")
+    print(f"[Abo] Roles con comandos: {', '.join(ROLES_COMANDOS)}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="LatamOS"))
 
 @bot.event
@@ -143,7 +158,7 @@ async def on_message(message: discord.Message):
             return
         return
 
-    # 0. HELP / CMD
+    # 0. HELP / CMD - TODOS PUEDEN VERLO
     if lower in {"!help", "!cmd"}:
         embed = discord.Embed(
             title="🔥 Comandos de Abo",
@@ -156,17 +171,17 @@ async def on_message(message: discord.Message):
             inline=False
         )
         embed.add_field(
-            name="🔨 Moderación",
+            name="🔨 Moderación (Solo staff)",
             value="`!banea @user razón` - Destierra alv\n`!mutea @user 10m` - Silencia por tiempo\n`!explota @user` - Lo banea con estilo",
             inline=False
         )
         embed.add_field(
-            name="🧹 Limpieza",
+            name="🧹 Limpieza (Solo staff)",
             value="`!limpia 10` - Borra 10 mensajes\n`!scan` - Busca fantasmas con 0 mensajes",
             inline=False
         )
         embed.add_field(
-            name="👥 Roles",
+            name="👥 Roles (Solo staff)",
             value="`!addrol @user1 @user2 Rol` - Da rol a varios\n`!delrol @user1 @user2 Rol` - Quita rol a varios",
             inline=False
         )
@@ -176,26 +191,32 @@ async def on_message(message: discord.Message):
             inline=False
         )
         embed.add_field(
-            name="💬 Otros",
-            value="`!say texto` - Yo digo lo que escribas\n`!help` / `!cmd` - Esta lista",
+            name="💬 Otros (Solo staff)",
+            value="`!say texto` - Yo digo lo que escribas",
             inline=False
         )
-        embed.set_footer(text="Solo el admin puede usar!say por DM pa postear en canales")
+        embed.set_footer(text="Comandos de moderación solo pa roles autorizados")
         await message.channel.send(embed=embed)
         return
 
-    # 1. PERSONALIDAD - SOLO SI LO MENCIONAN A ÉL DIRECTO
-if bot.user in message.mentions:
-    texto = re.sub(r"<@!?\d+>", "", message.content).strip()
-    if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
-        await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
+    # 1. PERSONALIDAD - TODOS PUEDEN HABLARLE
+    if bot.user in message.mentions:
+        texto = re.sub(r"<@!?\d+>", "", message.content).strip()
+        if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
+            await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
+            return
+        async with message.channel.typing():
+            respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
+        await message.channel.send(respuesta)
+
+    # A PARTIR DE AQUÍ SON COMANDOS - CHECAR PERMISOS
+    if not puede_usar_comandos(message.author):
+        if lower.startswith("!"):
+            await message.channel.send("No tienes permisos pa usar comandos we 🔒")
         return
-    async with message.channel.typing():
-        respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
-    await message.channel.send(respuesta)
-    
+
     # 2. BANEAR
-    elif lower.startswith("!baneo"):
+    elif lower.startswith("!banea"):
         if not message.mentions:
             await message.channel.send("Menciona a quién we: `!banea @user razón`")
             return
@@ -208,19 +229,19 @@ if bot.user in message.mentions:
             await message.channel.send("No lo pude banear we, revisa mis perms")
 
     # 3. MUTEAR
-    elif lower.startswith("!mut"):
+    elif lower.startswith("!mutea"):
         if not message.mentions:
             await message.channel.send("Menciona a quién we: `!mutea @user 10m`")
             return
         partes = message.content.split()
         user = message.mentions[0]
         tiempo_str = partes[2] if len(partes) > 2 else "10m"
-        
+
         tiempo_seg = 600
         if tiempo_str.endswith("m"): tiempo_seg = int(tiempo_str[:-1]) * 60
         elif tiempo_str.endswith("h"): tiempo_seg = int(tiempo_str[:-1]) * 3600
         elif tiempo_str.endswith("d"): tiempo_seg = int(tiempo_str[:-1]) * 86400
-        
+
         try:
             await user.timeout(timedelta(seconds=tiempo_seg))
             await message.channel.send(f"🤐 Silenciado {user.name} por {tiempo_str}")
@@ -228,7 +249,7 @@ if bot.user in message.mentions:
             await message.channel.send("No lo pude mutear we")
 
     # 4. EXPLOTAR
-    elif lower.startswith("!bom"):
+    elif lower.startswith("!explota"):
         if not message.mentions:
             await message.channel.send("¿A quién exploto we? `!explota @user`")
             return
@@ -248,20 +269,20 @@ if bot.user in message.mentions:
         if not rol_miembro:
             await message.channel.send(f"No hay rol '{ROL_MIEMBRO}' we")
             return
-            
+
         todos = {m.id: m for m in rol_miembro.members if not m.bot}
         actividad = {mid: 0 for mid in todos.keys()}
-        hace_30dias = discord.utils.utcnow() - timedelta(days=4)
-        
+        hace_30dias = discord.utils.utcnow() - timedelta(days=30)
+
         for canal in message.guild.text_channels:
             if not canal.permissions_for(message.guild.me).read_message_history: continue
             try:
                 async for msg in canal.history(limit=None, after=hace_30dias):
                     if msg.author.id in actividad: actividad[msg.author.id] += 1
             except: continue
-        
+
         fantasmas = [todos[mid].mention for mid, count in actividad.items() if count == 0]
-        
+
         if fantasmas:
             await message.channel.send(f"**👻 FANTASMAS 0 mensajes en 30d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
         else:
@@ -289,17 +310,17 @@ if bot.user in message.mentions:
         if len(partes) < 3 or not message.mentions:
             await message.channel.send("Uso: `!addrol @user1 @user2 NombreDelRol`")
             return
-        
+
         nombre_rol = " ".join(partes[1 + len(message.mentions):])
         if not nombre_rol:
             await message.channel.send("¿Y el nombre del rol apa? `!addrol @user1 @user2 Miembro`")
             return
-            
+
         rol = discord.utils.get(message.guild.roles, name=nombre_rol)
         if not rol:
             await message.channel.send(f"❌ No existe el rol `{nombre_rol}` we")
             return
-            
+
         exitos = []
         fallos = []
         for user in message.mentions:
@@ -308,7 +329,7 @@ if bot.user in message.mentions:
                 exitos.append(user.name)
             except:
                 fallos.append(user.name)
-        
+
         msg = ""
         if exitos: msg += f"✅ Rol `{rol.name}` dado a: {', '.join(exitos)}\n"
         if fallos: msg += f"❌ No pude dárselo a: {', '.join(fallos)}"
@@ -320,13 +341,13 @@ if bot.user in message.mentions:
         if len(partes) < 3 or not message.mentions:
             await message.channel.send("Uso: `!delrol @user1 @user2 NombreDelRol`")
             return
-            
+
         nombre_rol = " ".join(partes[1 + len(message.mentions):])
         rol = discord.utils.get(message.guild.roles, name=nombre_rol)
         if not rol:
             await message.channel.send(f"❌ No existe el rol `{nombre_rol}`")
             return
-            
+
         exitos = []
         fallos = []
         for user in message.mentions:
@@ -335,15 +356,15 @@ if bot.user in message.mentions:
                 exitos.append(user.name)
             except:
                 fallos.append(user.name)
-        
+
         msg = ""
         if exitos: msg += f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}\n"
         if fallos: msg += f"❌ No pude quitárselo a: {', '.join(fallos)}"
         await message.channel.send(msg)
 
-    # 10. BORRAR MEMORIA
+    # 10. BORRAR MEMORIA - ESTE SÍ PUEDEN TODOS
     elif lower.startswith("!olvidame"):
-        cursor.execute("DELETE FROM memoria WHERE user_id =? AND canal_id =?", 
+        cursor.execute("DELETE FROM memoria WHERE user_id =? AND canal_id =?",
                       (message.author.id, message.channel.id))
         db.commit()
         await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
