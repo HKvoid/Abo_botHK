@@ -1,4 +1,4 @@
-import discord
+tuimport discord
 import os
 import re
 import random
@@ -184,18 +184,18 @@ async def on_message(message: discord.Message):
         await message.channel.send(embed=embed)
         return
 
-    # 1. PERSONALIDAD - SI LA MENCIONAN CON MEMORIA
-    if bot.user.mentioned_in(message):
-        texto = re.sub(r"<@!?\d+>", "", message.content).strip()
-        if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
-            await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
-            return
-        async with message.channel.typing():
-            respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
-        await message.channel.send(respuesta)
-
+    # 1. PERSONALIDAD - SOLO SI LO MENCIONAN A ÉL DIRECTO
+if bot.user in message.mentions:
+    texto = re.sub(r"<@!?\d+>", "", message.content).strip()
+    if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
+        await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
+        return
+    async with message.channel.typing():
+        respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
+    await message.channel.send(respuesta)
+    
     # 2. BANEAR
-    elif lower.startswith("!banea"):
+    elif lower.startswith("!baneo"):
         if not message.mentions:
             await message.channel.send("Menciona a quién we: `!banea @user razón`")
             return
@@ -208,7 +208,7 @@ async def on_message(message: discord.Message):
             await message.channel.send("No lo pude banear we, revisa mis perms")
 
     # 3. MUTEAR
-    elif lower.startswith("!mutea"):
+    elif lower.startswith("!mut"):
         if not message.mentions:
             await message.channel.send("Menciona a quién we: `!mutea @user 10m`")
             return
@@ -228,7 +228,7 @@ async def on_message(message: discord.Message):
             await message.channel.send("No lo pude mutear we")
 
     # 4. EXPLOTAR
-    elif lower.startswith("!explota"):
+    elif lower.startswith("!bom"):
         if not message.mentions:
             await message.channel.send("¿A quién exploto we? `!explota @user`")
             return
@@ -251,7 +251,7 @@ async def on_message(message: discord.Message):
             
         todos = {m.id: m for m in rol_miembro.members if not m.bot}
         actividad = {mid: 0 for mid in todos.keys()}
-        hace_30dias = discord.utils.utcnow() - timedelta(days=30)
+        hace_30dias = discord.utils.utcnow() - timedelta(days=4)
         
         for canal in message.guild.text_channels:
             if not canal.permissions_for(message.guild.me).read_message_history: continue
