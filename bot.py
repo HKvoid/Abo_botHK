@@ -195,6 +195,11 @@ async def on_message(message: discord.Message):
             value="`!say texto` - Yo digo lo que escribas",
             inline=False
         )
+        embed.add_field(
+            name="🚨 Emergencia (Solo Root/ViceRoot)",
+            value="`!lockdown` - Cierra todos los chats\n`!unlock` - Abre todos los chats",
+            inline=False
+        )
         embed.set_footer(text="Comandos de moderación solo pa roles autorizados")
         await message.channel.send(embed=embed)
         return
@@ -368,5 +373,90 @@ async def on_message(message: discord.Message):
                       (message.author.id, message.channel.id))
         db.commit()
         await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
+
+    # 11. LOCKDOWN - CIERRA TODO EL SERVER
+    elif lower.startswith("!lockdown"):
+        rol_viceroot = discord.utils.get(message.guild.roles, name="ViceRoot")
+        tiene_viceroot = rol_viceroot in message.author.roles if rol_viceroot else False
+
+        if message.author.id!= TU_ID and not tiene_viceroot: # Solo tú o ViceRoot
+            await message.channel.send("Esto solo lo activa el Root o ViceRoot we 🔒")
+            return
+
+        await message.channel.send("⚠️ **INICIANDO PROTOCOLO DE EMERGENCIA...** ⚠️")
+
+        canales_afectados = 0
+        mensaje_aviso = "🚨 **El servidor acaba de tener problemas con un ataque, se han deshabilitado los chats hasta que el Root atienda el asunto, porfavor tengan paciencia** 🚨"
+
+        for canal in message.guild.text_channels:
+            try:
+                # Quita send_messages al @everyone
+                overwrite_everyone = canal.overwrites_for(message.guild.default_role)
+                overwrite_everyone.send_messages = False
+                await canal.set_permissions(message.guild.default_role, overwrite=overwrite_everyone)
+
+                # Quita send_messages a todos los roles menos bots/staff alto
+                for rol in message.guild.roles:
+                    if rol.name == "@everyone" or rol.is_bot_managed():
+                        continue
+                    if rol.permissions.administrator: # No tocar admins
+                        continue
+                    overwrite = canal.overwrites_for(rol)
+                    overwrite.send_messages = False
+                    await canal.set_permissions(rol, overwrite=overwrite)
+
+                # Manda el aviso solo si puede escribir ahí
+                if canal.permissions_for(message.guild.me).send_messages:
+                    await canal.send(mensaje_aviso)
+
+                canales_afectados += 1
+                await asyncio.sleep(0.5) # Pa no rate limitear a Discord
+
+            except discord.Forbidden:
+                continue
+            except Exception as e:
+                print(f"[Lockdown Error] {canal.name}: {e}")
+
+        await message.channel.send(f"🔒 **LOCKDOWN COMPLETO** | {canales_afectados} canales cerrados. Solo Admins pueden hablar.")
+
+    # 12. UNLOCK - ABRE TODO EL SERVER
+    elif lower.startswith("!unlock"):
+        rol_viceroot = discord.utils.get(message.guild.roles, name="ViceRoot")
+        tiene_viceroot = rol_viceroot in message.author.roles if rol_viceroot else False
+
+        if message.author.id!= TU_ID and not tiene_viceroot: # Solo tú o ViceRoot
+            await message.channel.send("Esto solo lo desactiva el Root o ViceRoot we 🔓")
+            return
+
+        await message.channel.send("🔓 **Quitando lockdown...**")
+
+        canales_afectados = 0
+        mensaje_aviso = "✅ **Servidor restaurado. Ya pueden escribir normal. Disculpen las molestias** ✅"
+
+        for canal in message.guild.text_channels:
+            try:
+                # Regresa send_messages al @everyone
+                overwrite_everyone = canal.overwrites_for(message.guild.default_role)
+                overwrite_everyone.send_messages = None # None = hereda del server
+                await canal.set_permissions(message.guild.default_role, overwrite=overwrite_everyone)
+
+                # Quita el override de todos los roles pa que hereden normal
+                for rol, overwrite in canal.overwrites.items():
+                    if isinstance(rol, discord.Role) and not rol.permissions.administrator:
+                        overwrite.send_messages = None
+                        await canal.set_permissions(rol, overwrite=overwrite)
+
+                if canal.permissions_for(message.guild.me).send_messages:
+                    await canal.send(mensaje_aviso)
+
+                canales_afectados += 1
+                await asyncio.sleep(0.5)
+
+            except discord.Forbidden:
+                continue
+            except Exception as e:
+                print(f"[Unlock Error] {canal.name}: {e}")
+
+        await message.channel.send(f"🔓 **UNLOCK COMPLETO** | {canales_afectados} canales restaurados.")
 
 bot.run(TOKEN)
