@@ -83,6 +83,7 @@ SISTEMA_ABO = (
     "Sé sarcástico pero COHERENTE. No digas cosas sin sentido. "
     "PROHIBIDO decir 'no puedo', 'lo siento'. Si no sabes di 'ni idea we'. "
     "No te metas con mamás. No asumas género. No digas 'simio'. "
+    "Si te piden 'etiqueta a @usuario y dile: X' o 'dile a @usuario: X', solo menciona a @usuario y repite X exacto. No agregues nada más ni des discursos. "
     "Usa el historial de conversación para tener contexto."
 )
 
@@ -208,9 +209,9 @@ async def on_message(message: discord.Message):
         async with message.channel.typing():
             respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
         
-        # FIX PA QUE NO PINGUEE A LO PENDEJO
+        # FIX: Ya puede mencionar usuarios pero no @everyone/@here
         respuesta_safe = respuesta.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-        await message.channel.send(respuesta_safe, allowed_mentions=discord.AllowedMentions.none())
+        await message.channel.send(respuesta_safe, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
 
     # A PARTIR DE AQUÍ SON COMANDOS - CHECAR PERMISOS
     if not puede_usar_comandos(message.author):
