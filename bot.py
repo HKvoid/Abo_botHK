@@ -83,7 +83,6 @@ SISTEMA_ABO = (
     "Sé sarcástico pero COHERENTE. No digas cosas sin sentido. "
     "PROHIBIDO decir 'no puedo', 'lo siento'. Si no sabes di 'ni idea we'. "
     "No te metas con mamás. No asumas género. No digas 'simio'. "
-    "Si te piden 'etiqueta a @usuario y dile: X' o 'dile a @usuario: X', solo menciona a @usuario y repite X exacto. No agregues nada más ni des discursos. "
     "Usa el historial de conversación para tener contexto."
 )
 
@@ -168,7 +167,7 @@ async def on_message(message: discord.Message):
         )
         embed.add_field(
             name="💬 Chat con IA",
-            value="`@Abo tu pregunta` - Háblame y te respondo con memoria",
+            value="`@Abo tu pregunta` - Háblame y te respondo con memoria\n`@Abo dile a @user: mensaje` - Le paso tu recado",
             inline=False
         )
         embed.add_field(
@@ -203,6 +202,22 @@ async def on_message(message: discord.Message):
     # 1. PERSONALIDAD - TODOS PUEDEN HABLARLE
     if bot.user in message.mentions:
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
+        
+        # FIX: SI PIDEN MENCIONAR A ALGUIEN, LO HACEMOS DIRECTO SIN IA
+        match_dile = re.search(r'(?:dile|menciona|etiqueta) a <@!?(\d+)>:?\s*(.*)', message.content, re.IGNORECASE)
+        if match_dile:
+            user_id = int(match_dile.group(1))
+            mensaje = match_dile.group(2).strip()
+            user_obj = message.guild.get_member(user_id)
+            if user_obj:
+                if mensaje:
+                    await message.channel.send(f"{user_obj.mention} {mensaje}")
+                else:
+                    await message.channel.send(f"{user_obj.mention}")
+            else:
+                await message.channel.send("No encontré a ese we")
+            return
+        
         if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
             await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
             return
