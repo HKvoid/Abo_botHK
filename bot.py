@@ -8,7 +8,7 @@ from datetime import timedelta
 from groq import Groq
 
 # ─────────────────────────────────────────
-# CONFIG
+# CONFIG: Si está wea funciona, es un milagro.
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
