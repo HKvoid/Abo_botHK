@@ -16,7 +16,7 @@ TU_ID = 1180967503682355220
 ROL_MIEMBRO = "MemberLT"
 
 # ROLES QUE PUEDEN USAR COMANDOS - PON AQUÍ LOS NOMBRES EXACTOS
-ROLES_COMANDOS = ["Admin", "Mod", "Semi Admin", "ViceRoot", "Root", "SemiMod"] # <-- Edita esto we
+ROLES_COMANDOS = ["Admin", "Mod", "Semi Admin", "ViceRoot", "Root"] # <-- Edita esto we
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
