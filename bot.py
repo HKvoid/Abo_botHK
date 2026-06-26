@@ -59,12 +59,12 @@ def guardar_mensaje(user_id, canal_id, rol, contenido):
         DELETE FROM memoria WHERE rowid NOT IN (
             SELECT rowid FROM memoria
             WHERE user_id =? AND canal_id =?
-            ORDER BY timestamp DESC LIMIT 10
+            ORDER BY timestamp DESC LIMIT 100
         ) AND user_id =? AND canal_id =?
     """, (user_id, canal_id, user_id, canal_id))
     db.commit()
 
-def obtener_historial(user_id, canal_id, limite=8):
+def obtener_historial(user_id, canal_id, limite=30):
     cursor.execute("""
         SELECT rol, contenido FROM memoria
         WHERE user_id =? AND canal_id =?
@@ -202,7 +202,16 @@ async def on_message(message: discord.Message):
     # 1. PERSONALIDAD - TODOS PUEDEN HABLARLE
     if bot.user in message.mentions:
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
-        
+
+        # NUEVO: Agarra el mensaje al que le respondieron pa dar contexto
+        contexto_extra = ""
+        if message.reference and message.reference.message_id:
+            try:
+                msg_ref = await message.channel.fetch_message(message.reference.message_id)
+                contexto_extra = f"[Respondiendo a {msg_ref.author.name}: {msg_ref.content[:80]}]\n"
+            except:
+                pass
+
         # FIX: SI PIDEN MENCIONAR A ALGUIEN, LO HACEMOS DIRECTO SIN IA
         match_dile = re.search(r'(?:dile|menciona|etiqueta) a <@!?(\d+)>:?\s*(.*)', message.content, re.IGNORECASE)
         if match_dile:
@@ -217,13 +226,13 @@ async def on_message(message: discord.Message):
             else:
                 await message.channel.send("No encontré a ese we")
             return
-        
+
         if texto.lower() in {"hola", "ola", "wenas", "we", "hi", "q", "que", "hey", "k", "", "abo"}:
             await message.channel.send(random.choice(["Qué onda", "Qué pedo", "Dime we", "Aquí andamos"]))
             return
         async with message.channel.typing():
-            respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
-        
+            respuesta = await preguntar_ia(contexto_extra + texto, message.author.id, message.channel.id)
+
         # FIX: Ya puede mencionar usuarios pero no @everyone/@here
         respuesta_safe = respuesta.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
         await message.channel.send(respuesta_safe, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
