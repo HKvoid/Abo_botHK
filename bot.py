@@ -389,5 +389,3 @@ async def on_message(message: discord.Message):
         await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
 
 bot.run(TOKEN)
-
-Cambialas tu en este código
