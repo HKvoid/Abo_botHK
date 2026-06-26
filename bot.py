@@ -8,13 +8,13 @@ from datetime import timedelta
 from groq import Groq
 
 # ─────────────────────────────────────────
-# CONFIG - METE TUS 3 KEYS AQUÍ
+# CONFIG - METE TUS 2-3 KEYS AQUÍ
 # ─────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 GROQ_KEYS = [
     os.getenv("GROQ_KEY1"), # Key principal
     os.getenv("GROQ_KEY2"), # Key secundaria
-    os.getenv("GROQ_KEY3"), # Key de respaldo
+    os.getenv("GROQ_KEY3"), # Key de respaldo - opcional
 ]
 TU_ID = 1180967503682355220
 ROL_MIEMBRO = "MemberLT"
@@ -22,7 +22,7 @@ ROLES_COMANDOS = ["Admin", "Mod", "Semi Admin", "ViceRoot", "Root"]
 
 # Sistema de rotación
 key_actual = 0
-groq_clients = [Groq(api_key=k) for k in GROQ_KEYS if k] # Filtra las None por si no pusiste las 3
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS if k] # Filtra las None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -75,7 +75,7 @@ def obtener_historial(user_id, canal_id, limite=20):
     return list(reversed(historial))
 
 # ─────────────────────────────────────────
-# PERSONALIDAD ABO + ROTACIÓN DE KEYS
+# PERSONALIDAD ABO + ROTACIÓN SILENCIOSA
 # ─────────────────────────────────────────
 SISTEMA_ABO = (
     "Eres Abo, bot de Discord. "
@@ -118,14 +118,18 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
             error_str = str(e).lower()
             print(f"[Groq Error Key {key_actual+1}] {e}")
 
+            # Si es rate limit, ROTA EN SILENCIO - no avises
             if "rate_limit" in error_str or "429" in error_str or "tokens per day" in error_str:
                 key_actual = (key_actual + 1) % len(groq_clients)
                 print(f"[Abo] Key agotada. Cambiando a Key {key_actual+1}")
 
+                # Si ya probamos todas las keys y todas fallan
                 if intento_key == len(groq_clients) - 1:
                     return "Se me acabaron todas las vidas we, vuelve a las 6 PM 💀"
-                continue
+                continue # ROTA SIN DECIR "Me bugueé we"
             else:
+                # Solo pa errores reales que no son de rate limit
+                print(f"[Abo] Error real: {e}")
                 return "Me bugueé we"
 
     return "Me bugueé we"
@@ -229,7 +233,7 @@ async def on_message(message: discord.Message):
             await message.channel.send("No tienes permisos pa usar comandos we 🔒")
         return
 
-    #...resto de comandos igual que antes...
+    #...resto de comandos igual...
     elif lower.startswith("!banea"):
         if not message.mentions:
             await message.channel.send("Menciona a quién we: `!banea @user razón`")
