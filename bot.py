@@ -231,7 +231,7 @@ async def on_message(message: discord.Message):
     # A PARTIR DE AQUÍ SON COMANDOS - CHECAR PERMISOS
     if not puede_usar_comandos(message.author):
         if lower.startswith("!"):
-            await message.channel.send("No tienes permisos pa usar comandos we 🔒")
+            await message.channel.send("Waos")
         return
 
     # 2. BANEAR
@@ -274,7 +274,7 @@ async def on_message(message: discord.Message):
             return
         user = message.mentions[0]
         try:
-            await message.channel.send(f"💣 ALV {user.mention} EXPLOTÓ 💣")
+            await message.channel.send(f"{user.mention} EXPLOTÓ 💣")
             await asyncio.sleep(1)
             await user.ban(reason=f"Explotado por {message.author}")
             await message.channel.send(f"Quedaron los puros pedazos de {user.name} we")
@@ -283,7 +283,7 @@ async def on_message(message: discord.Message):
 
     # 5. SCAN DE ACTIVIDAD
     elif lower.startswith("!scan"):
-        await message.channel.send("Escaneando fantasmas... ⏳")
+        await message.channel.send("Escaneando tiesos... ⏳")
         rol_miembro = discord.utils.get(message.guild.roles, name=ROL_MIEMBRO)
         if not rol_miembro:
             await message.channel.send(f"No hay rol '{ROL_MIEMBRO}' we")
@@ -291,7 +291,7 @@ async def on_message(message: discord.Message):
 
         todos = {m.id: m for m in rol_miembro.members if not m.bot}
         actividad = {mid: 0 for mid in todos.keys()}
-        hace_30dias = discord.utils.utcnow() - timedelta(days=7)
+        hace_30dias = discord.utils.utcnow() - timedelta(days=10)
 
         for canal in message.guild.text_channels:
             if not canal.permissions_for(message.guild.me).read_message_history: continue
@@ -303,9 +303,9 @@ async def on_message(message: discord.Message):
         fantasmas = [todos[mid].mention for mid, count in actividad.items() if count == 0]
 
         if fantasmas:
-            await message.channel.send(f"**👻 FANTASMAS 0 mensajes en 7d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
+            await message.channel.send(f"**Tiesos con 0 mensajes en 10d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
         else:
-            await message.channel.send("No hay fantasmas we, todos activos 🔥")
+            await message.channel.send("No hay tiesos we, todos activos 🔥")
 
     # 6. SAY EN SERVER
     elif lower.startswith("!say "):
