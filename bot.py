@@ -281,9 +281,9 @@ async def on_message(message: discord.Message):
         except:
             await message.channel.send("El wey trae chaleco antibombas")
 
-    # 5. SCAN DE ACTIVIDAD
-    elif lower.startswith("!scan"):
-        await message.channel.send("Escaneando tiesos... ⏳")
+# 5. SCAN DE ACTIVIDAD - VERSIÓN 1 SOLO MENSAJE
+elif lower.startswith("!scan"):
+    async with message.channel.typing(): # Esto muestra "Abo está escribiendo..." en lugar del mensaje
         rol_miembro = discord.utils.get(message.guild.roles, name=ROL_MIEMBRO)
         if not rol_miembro:
             await message.channel.send(f"No hay rol '{ROL_MIEMBRO}' we")
@@ -302,10 +302,11 @@ async def on_message(message: discord.Message):
 
         fantasmas = [todos[mid].mention for mid, count in actividad.items() if count == 0]
 
-        if fantasmas:
-            await message.channel.send(f"**Tiesos con 0 mensajes en 10d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
-        else:
-            await message.channel.send("No hay tiesos we, todos activos 🔥")
+    # Solo se manda 1 mensaje al final
+    if fantasmas:
+        await message.channel.send(f"**Tiesos con 0 mensajes en 10d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
+    else:
+        await message.channel.send("No hay tiesos we, todos activos 🔥")
 
     # 6. SAY EN SERVER
     elif lower.startswith("!say "):
