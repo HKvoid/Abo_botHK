@@ -1,3 +1,4 @@
+
 import discord
 import os
 import re
@@ -24,6 +25,10 @@ intents.message_content = True
 intents.members = True
 bot = discord.Client(intents=intents)
 
+# VARIABLES GLOBALES PA LA PURGA
+ULTIMOS_FANTASMAS = {}
+PURGA_PENDIENTE = {} # guild_id: True/False
+
 # ─────────────────────────────────────────
 # FUNCIÓN PA CHECAR PERMISOS DE COMANDOS
 # ─────────────────────────────────────────
@@ -35,7 +40,7 @@ def puede_usar_comandos(member: discord.Member) -> bool:
     return any(rol.name in ROLES_COMANDOS for rol in member.roles)
 
 # ─────────────────────────────────────────
-# MEMORIA CON SQLITE - AHORA DE 30
+# MEMORIA CON SQLITE - 30
 # ─────────────────────────────────────────
 db = sqlite3.connect("abo_memoria.db")
 cursor = db.cursor()
@@ -53,7 +58,6 @@ db.commit()
 def guardar_mensaje(user_id, canal_id, rol, contenido):
     cursor.execute("INSERT INTO memoria (user_id, canal_id, rol, contenido) VALUES (?,?,?,?)",
                    (user_id, canal_id, rol, contenido))
-    # BORRA TODO MENOS LOS ÚLTIMOS 30 MENSAJES POR USER + CANAL
     cursor.execute("""
         DELETE FROM memoria WHERE rowid NOT IN (
             SELECT rowid FROM memoria
@@ -63,7 +67,7 @@ def guardar_mensaje(user_id, canal_id, rol, contenido):
     """, (user_id, canal_id, user_id, canal_id))
     db.commit()
 
-def obtener_historial(user_id, canal_id, limite=30): # <-- 30 pa la IA
+def obtener_historial(user_id, canal_id, limite=30):
     cursor.execute("""
         SELECT rol, contenido FROM memoria
         WHERE user_id =? AND canal_id =?
@@ -89,12 +93,9 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
         historial = obtener_historial(user_id, canal_id)
         mensajes = [{"role": "system", "content": SISTEMA_ABO}]
-
         for rol, contenido in historial:
             mensajes.append({"role": rol, "content": contenido})
-
         mensajes.append({"role": "user", "content": prompt})
-
         chat = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=mensajes,
@@ -102,10 +103,8 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
             temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
-
         guardar_mensaje(user_id, canal_id, "user", prompt)
         guardar_mensaje(user_id, canal_id, "assistant", respuesta)
-
         return respuesta if respuesta else "Ni idea we"
     except Exception as e:
         print(f"[Groq Error] {e}")
@@ -122,6 +121,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
+    global ULTIMOS_FANTASMAS, PURGA_PENDIENTE
     if message.author.bot: return
     lower = message.content.lower()
 
@@ -166,12 +166,12 @@ async def on_message(message: discord.Message):
         )
         embed.add_field(
             name="🔨 Moderación (Solo staff)",
-            value="`!banea @user razón` - Destierra alv\n`!mutea @user 10m` - Silencia por tiempo\n`!explota @user` - Lo banea con estilo",
+            value="`!banea @user razón` - Destierra alv\n`!mutea @user 10m` - Silencia por tiempo\n`!explota @user` - Lo banea con estilo\n`!purgaafk confirmar` - Patea a tiesos de 15d",
             inline=False
         )
         embed.add_field(
             name="🧹 Limpieza (Solo staff)",
-            value="`!limpia 10` - Borra 10 mensajes\n`!scan` - Busca fantasmas con 0 mensajes",
+            value="`!limpia 10` - Borra 10 mensajes\n`!scan` - Busca fantasmas con 0 mensajes en 15d",
             inline=False
         )
         embed.add_field(
@@ -214,7 +214,6 @@ async def on_message(message: discord.Message):
             return
         async with message.channel.typing():
             respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
-
         respuesta_safe = respuesta.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
         await message.channel.send(respuesta_safe, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
 
@@ -265,6 +264,7 @@ async def on_message(message: discord.Message):
         except:
             await message.channel.send("El wey trae chaleco antibombas")
 
+    # 5. SCAN DE ACTIVIDAD 15 DÍAS + PREGUNTA PURGA
     elif lower.startswith("!scan"):
         async with message.channel.typing():
             rol_miembro = discord.utils.get(message.guild.roles, name=ROL_MIEMBRO)
@@ -273,18 +273,52 @@ async def on_message(message: discord.Message):
                 return
             todos = {m.id: m for m in rol_miembro.members if not m.bot}
             actividad = {mid: 0 for mid in todos.keys()}
-            hace_30dias = discord.utils.utcnow() - timedelta(days=16)
+            hace_15dias = discord.utils.utcnow() - timedelta(days=15)
             for canal in message.guild.text_channels:
                 if not canal.permissions_for(message.guild.me).read_message_history: continue
                 try:
-                    async for msg in canal.history(limit=None, after=hace_30dias):
+                    async for msg in canal.history(limit=None, after=hace_15dias):
                         if msg.author.id in actividad: actividad[msg.author.id] += 1
                 except: continue
-            fantasmas = [todos[mid].mention for mid, count in actividad.items() if count == 0]
-        if fantasmas:
-            await message.channel.send(f"**Tiesos con 0 mensajes en 16d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
+            fantasmas_ids = [mid for mid, count in actividad.items() if count == 0]
+            fantasmas_mentions = [todos[mid].mention for mid in fantasmas_ids]
+            ULTIMOS_FANTASMAS[message.guild.id] = fantasmas_ids
+            PURGA_PENDIENTE[message.guild.id] = False
+
+        if fantasmas_mentions:
+            await message.channel.send(f"**Tiesos con 0 mensajes en 15d:** {len(fantasmas_mentions)}\n{', '.join(fantasmas_mentions[:20])}")
+            await message.channel.send("¿Los pateo alv? Usa `!purgaafk confirmar` pa desterrarlos we 😈")
         else:
             await message.channel.send("No hay tiesos we, todos activos 🔥")
+            ULTIMOS_FANTASMAS[message.guild.id] = []
+
+    # 5.1 NUEVO COMANDO PURGA AFK CON CONFIRMACIÓN
+    elif lower.startswith("!purgaafk"):
+        guild_id = message.guild.id
+        if guild_id not in ULTIMOS_FANTASMAS or not ULTIMOS_FANTASMAS[guild_id]:
+            await message.channel.send("Primero haz un `!scan` we, no tengo a quién patear")
+            return
+
+        if lower == "!purgaafk confirmar":
+            await message.channel.send(f"😈 Iniciando purga de {len(ULTIMOS_FANTASMAS[guild_id])} tiesos...")
+            pateados = 0
+            fallos = 0
+
+            for user_id in ULTIMOS_FANTASMAS[guild_id]:
+                user = message.guild.get_member(user_id)
+                if user and not user.bot:
+                    try:
+                        await user.kick(reason="Inactividad 15d - Purga automática de Abo")
+                        pateados += 1
+                        await asyncio.sleep(0.5)
+                    except:
+                        fallos += 1
+
+            await message.channel.send(f"✅ Purga terminada: {pateados} pateados, {fallos} fallaron por perms we")
+            ULTIMOS_FANTASMAS[guild_id] = []
+            PURGA_PENDIENTE[guild_id] = False
+        else:
+            await message.channel.send(f"⚠️ Vas a patear a {len(ULTIMOS_FANTASMAS[guild_id])} usuarios por inactividad.\nEscribe `!purgaafk confirmar` pa proceder o cancela y ya.")
 
     elif lower.startswith("!say "):
         texto = message.content[5:]
