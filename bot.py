@@ -273,7 +273,7 @@ async def on_message(message: discord.Message):
                 return
             todos = {m.id: m for m in rol_miembro.members if not m.bot}
             actividad = {mid: 0 for mid in todos.keys()}
-            hace_30dias = discord.utils.utcnow() - timedelta(days=10)
+            hace_30dias = discord.utils.utcnow() - timedelta(days=16)
             for canal in message.guild.text_channels:
                 if not canal.permissions_for(message.guild.me).read_message_history: continue
                 try:
@@ -282,7 +282,7 @@ async def on_message(message: discord.Message):
                 except: continue
             fantasmas = [todos[mid].mention for mid, count in actividad.items() if count == 0]
         if fantasmas:
-            await message.channel.send(f"**Tiesos con 0 mensajes en 10d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
+            await message.channel.send(f"**Tiesos con 0 mensajes en 16d:** {len(fantasmas)}\n{', '.join(fantasmas[:20])}")
         else:
             await message.channel.send("No hay tiesos we, todos activos 🔥")
 
