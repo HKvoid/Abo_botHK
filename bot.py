@@ -1,12 +1,22 @@
-
 import discord
 import os
 import re
 import random
 import asyncio
 import sqlite3
+import logging
 from datetime import timedelta
 from groq import Groq
+
+# ─────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger("Abo")
 
 # ─────────────────────────────────────────
 # CONFIG
@@ -18,6 +28,12 @@ ROL_MIEMBRO = "MemberLT"
 
 ROLES_COMANDOS = ["Admin", "Mod", "Semi Admin", "ViceRoot", "Root"]
 
+# MEJORA 1: Validar variables de entorno al inicio, falla rápido con mensaje claro
+if not TOKEN:
+    raise RuntimeError("❌ Falta la variable de entorno TOKEN")
+if not GROQ_API_KEY:
+    raise RuntimeError("❌ Falta la variable de entorno GROQ_API_KEY")
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 intents = discord.Intents.default()
@@ -27,7 +43,7 @@ bot = discord.Client(intents=intents)
 
 # VARIABLES GLOBALES PA LA PURGA
 ULTIMOS_FANTASMAS = {}
-PURGA_PENDIENTE = {} # guild_id: True/False
+PURGA_PENDIENTE = {}  # guild_id: True/False
 
 # ─────────────────────────────────────────
 # FUNCIÓN PA CHECAR PERMISOS DE COMANDOS
@@ -41,8 +57,9 @@ def puede_usar_comandos(member: discord.Member) -> bool:
 
 # ─────────────────────────────────────────
 # MEMORIA CON SQLITE - 30
+# MEJORA 2: check_same_thread=False para evitar errores en contexto async
 # ─────────────────────────────────────────
-db = sqlite3.connect("abo_memoria.db")
+db = sqlite3.connect("abo_memoria.db", check_same_thread=False)
 cursor = db.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS memoria (
@@ -107,7 +124,8 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         guardar_mensaje(user_id, canal_id, "assistant", respuesta)
         return respuesta if respuesta else "Ni idea we"
     except Exception as e:
-        print(f"[Groq Error] {e}")
+        # MEJORA 3: Loggear el error real en vez de solo print
+        log.error(f"[Groq Error] {e}")
         return "Me bugueé we"
 
 # ─────────────────────────────────────────
@@ -115,16 +133,18 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
 # ─────────────────────────────────────────
 @bot.event
 async def on_ready():
-    print(f"[Abo] Online: {bot.user} | Memoria de 30 activa")
-    print(f"[Abo] Roles con comandos: {', '.join(ROLES_COMANDOS)}")
+    log.info(f"Online: {bot.user} | Memoria de 30 activa")
+    log.info(f"Roles con comandos: {', '.join(ROLES_COMANDOS)}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="LatamOS"))
 
 @bot.event
 async def on_message(message: discord.Message):
     global ULTIMOS_FANTASMAS, PURGA_PENDIENTE
-    if message.author.bot: return
+    if message.author.bot:
+        return
     lower = message.content.lower()
 
+    # ── DMs solo para el owner ──
     if isinstance(message.channel, discord.DMChannel) and message.author.id == TU_ID:
         if lower.startswith("!say "):
             partes = message.content.split(" ", 2)
@@ -141,7 +161,8 @@ async def on_message(message: discord.Message):
                         canal_obj = canal
                         server_obj = guild
                         break
-                if canal_obj: break
+                if canal_obj:
+                    break
             if canal_obj:
                 try:
                     await canal_obj.send(texto)
@@ -150,9 +171,9 @@ async def on_message(message: discord.Message):
                     await message.channel.send("❌ No tengo permisos pa escribir ahí we")
             else:
                 await message.channel.send(f"❌ No encontré el canal `{canal_nombre}`")
-            return
         return
 
+    # ── Help ──
     if lower in {"!help", "!cmd"}:
         embed = discord.Embed(
             title="🔥 Comandos de Abo",
@@ -193,6 +214,15 @@ async def on_message(message: discord.Message):
         await message.channel.send(embed=embed)
         return
 
+    # ── MEJORA 4: !olvidame disponible para CUALQUIER usuario, no solo staff ──
+    if lower.startswith("!olvidame"):
+        cursor.execute("DELETE FROM memoria WHERE user_id =? AND canal_id =?",
+                       (message.author.id, message.channel.id))
+        db.commit()
+        await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
+        return
+
+    # ── Menciones al bot ──
     if bot.user in message.mentions:
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
         match_dile = re.search(r'(?:dile|menciona|etiqueta) a <@!?(\d+)>:?\s*(.*)', message.content, re.IGNORECASE)
@@ -201,10 +231,7 @@ async def on_message(message: discord.Message):
             mensaje = match_dile.group(2).strip()
             user_obj = message.guild.get_member(user_id)
             if user_obj:
-                if mensaje:
-                    await message.channel.send(f"{user_obj.mention} {mensaje}")
-                else:
-                    await message.channel.send(f"{user_obj.mention}")
+                await message.channel.send(f"{user_obj.mention} {mensaje}" if mensaje else f"{user_obj.mention}")
             else:
                 await message.channel.send("No encontré a ese we")
             return
@@ -217,10 +244,13 @@ async def on_message(message: discord.Message):
         respuesta_safe = respuesta.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
         await message.channel.send(respuesta_safe, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
 
+    # ── Bloquear comandos a no-staff ──
     if not puede_usar_comandos(message.author):
         if lower.startswith("!"):
             await message.channel.send("Waos")
         return
+
+    # ── COMANDOS STAFF ──
 
     elif lower.startswith("!banea"):
         if not message.mentions:
@@ -231,7 +261,10 @@ async def on_message(message: discord.Message):
         try:
             await user.ban(reason=razon)
             await message.channel.send(f"🔨 {user.name} fue desterrado alv. Razón: {razon}")
-        except:
+        except discord.Forbidden:
+            await message.channel.send("No tengo permisos pa banearlo we")
+        except Exception as e:
+            log.error(f"[banea] {e}")
             await message.channel.send("No lo pude banear we, revisa mis perms")
 
     elif lower.startswith("!mutea"):
@@ -240,15 +273,29 @@ async def on_message(message: discord.Message):
             return
         partes = message.content.split()
         user = message.mentions[0]
-        tiempo_str = partes[2] if len(partes) > 2 else "10m"
+        # MEJORA 5: Tomar el último argumento como tiempo (evita colisión con la mención)
+        tiempo_str = partes[-1] if len(partes) > 2 else "10m"
+        # Si el último arg es una mención, default a 10m
+        if tiempo_str.startswith("<@"):
+            tiempo_str = "10m"
         tiempo_seg = 600
-        if tiempo_str.endswith("m"): tiempo_seg = int(tiempo_str[:-1]) * 60
-        elif tiempo_str.endswith("h"): tiempo_seg = int(tiempo_str[:-1]) * 3600
-        elif tiempo_str.endswith("d"): tiempo_seg = int(tiempo_str[:-1]) * 86400
+        try:
+            if tiempo_str.endswith("m"):
+                tiempo_seg = int(tiempo_str[:-1]) * 60
+            elif tiempo_str.endswith("h"):
+                tiempo_seg = int(tiempo_str[:-1]) * 3600
+            elif tiempo_str.endswith("d"):
+                tiempo_seg = int(tiempo_str[:-1]) * 86400
+        except ValueError:
+            await message.channel.send("Tiempo inválido we, usa por ej: `10m`, `2h`, `1d`")
+            return
         try:
             await user.timeout(timedelta(seconds=tiempo_seg))
             await message.channel.send(f"🤐 Silenciado {user.name} por {tiempo_str}")
-        except:
+        except discord.Forbidden:
+            await message.channel.send("No tengo permisos pa mutearlo we")
+        except Exception as e:
+            log.error(f"[mutea] {e}")
             await message.channel.send("No lo pude mutear we")
 
     elif lower.startswith("!explota"):
@@ -261,10 +308,13 @@ async def on_message(message: discord.Message):
             await asyncio.sleep(1)
             await user.ban(reason=f"Explotado por {message.author}")
             await message.channel.send(f"Quedaron los puros pedazos de {user.name} we")
-        except:
+        except discord.Forbidden:
+            await message.channel.send("El wey trae chaleco antibombas (sin permisos)")
+        except Exception as e:
+            log.error(f"[explota] {e}")
             await message.channel.send("El wey trae chaleco antibombas")
 
-    # 5. SCAN DE ACTIVIDAD 15 DÍAS + PREGUNTA PURGA
+    # SCAN DE ACTIVIDAD 15 DÍAS + PREGUNTA PURGA
     elif lower.startswith("!scan"):
         async with message.channel.typing():
             rol_miembro = discord.utils.get(message.guild.roles, name=ROL_MIEMBRO)
@@ -275,24 +325,31 @@ async def on_message(message: discord.Message):
             actividad = {mid: 0 for mid in todos.keys()}
             hace_15dias = discord.utils.utcnow() - timedelta(days=15)
             for canal in message.guild.text_channels:
-                if not canal.permissions_for(message.guild.me).read_message_history: continue
+                if not canal.permissions_for(message.guild.me).read_message_history:
+                    continue
                 try:
                     async for msg in canal.history(limit=None, after=hace_15dias):
-                        if msg.author.id in actividad: actividad[msg.author.id] += 1
-                except: continue
+                        if msg.author.id in actividad:
+                            actividad[msg.author.id] += 1
+                except Exception as e:
+                    log.warning(f"[scan] No pude leer #{canal.name}: {e}")
+                    continue
             fantasmas_ids = [mid for mid, count in actividad.items() if count == 0]
             fantasmas_mentions = [todos[mid].mention for mid in fantasmas_ids]
             ULTIMOS_FANTASMAS[message.guild.id] = fantasmas_ids
             PURGA_PENDIENTE[message.guild.id] = False
 
         if fantasmas_mentions:
-            await message.channel.send(f"**Tiesos con 0 mensajes en 15d:** {len(fantasmas_mentions)}\n{', '.join(fantasmas_mentions[:20])}")
+            await message.channel.send(
+                f"**Tiesos con 0 mensajes en 15d:** {len(fantasmas_mentions)}\n"
+                f"{', '.join(fantasmas_mentions[:20])}"
+            )
             await message.channel.send("¿Los pateo alv? Usa `!purgaafk confirmar` pa desterrarlos we 😈")
         else:
             await message.channel.send("No hay tiesos we, todos activos 🔥")
             ULTIMOS_FANTASMAS[message.guild.id] = []
 
-    # 5.1 NUEVO COMANDO PURGA AFK CON CONFIRMACIÓN
+    # PURGA AFK CON CONFIRMACIÓN
     elif lower.startswith("!purgaafk"):
         guild_id = message.guild.id
         if guild_id not in ULTIMOS_FANTASMAS or not ULTIMOS_FANTASMAS[guild_id]:
@@ -311,26 +368,39 @@ async def on_message(message: discord.Message):
                         await user.kick(reason="Inactividad 15d - Purga automática de Abo")
                         pateados += 1
                         await asyncio.sleep(0.5)
-                    except:
+                    except Exception as e:
+                        log.warning(f"[purgaafk] No pude patear a {user_id}: {e}")
                         fallos += 1
 
-            await message.channel.send(f"✅ Purga terminada: {pateados} pateados, {fallos} fallaron por perms we")
+            await message.channel.send(
+                f"✅ Purga terminada: {pateados} pateados, {fallos} fallaron por perms we"
+            )
             ULTIMOS_FANTASMAS[guild_id] = []
             PURGA_PENDIENTE[guild_id] = False
         else:
-            await message.channel.send(f"⚠️ Vas a patear a {len(ULTIMOS_FANTASMAS[guild_id])} usuarios por inactividad.\nEscribe `!purgaafk confirmar` pa proceder o cancela y ya.")
+            await message.channel.send(
+                f"⚠️ Vas a patear a {len(ULTIMOS_FANTASMAS[guild_id])} usuarios por inactividad.\n"
+                "Escribe `!purgaafk confirmar` pa proceder o cancela y ya."
+            )
 
     elif lower.startswith("!say "):
         texto = message.content[5:]
-        await message.delete()
+        # MEJORA 6: Borrar el mensaje del comando en servidor (ya lo hacía en DM, faltaba aquí)
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            pass
         await message.channel.send(texto)
 
     elif lower.startswith("!limpia"):
         partes = lower.split()
+        # MEJORA 7: +1 para incluir el propio comando en el purge, limitado a 100 mensajes reales
         num = int(partes[1]) + 1 if len(partes) > 1 and partes[1].isdigit() else 6
-        if num > 101: num = 101
+        if num > 101:
+            num = 101
         borrados = await message.channel.purge(limit=num)
-        confirmacion = await message.channel.send(f"🧹 {len(borrados)-1} mensajes alv")
+        # -1 porque el comando del usuario también se borró
+        confirmacion = await message.channel.send(f"🧹 {len(borrados) - 1} mensajes alv")
         await asyncio.sleep(3)
         await confirmacion.delete()
 
@@ -353,11 +423,14 @@ async def on_message(message: discord.Message):
             try:
                 await user.add_roles(rol, reason=f"Rol dado por {message.author}")
                 exitos.append(user.name)
-            except:
+            except Exception as e:
+                log.warning(f"[addrol] {user.name}: {e}")
                 fallos.append(user.name)
         msg = ""
-        if exitos: msg += f"✅ Rol `{rol.name}` dado a: {', '.join(exitos)}\n"
-        if fallos: msg += f"❌ No pude dárselo a: {', '.join(fallos)}"
+        if exitos:
+            msg += f"✅ Rol `{rol.name}` dado a: {', '.join(exitos)}\n"
+        if fallos:
+            msg += f"❌ No pude dárselo a: {', '.join(fallos)}"
         await message.channel.send(msg)
 
     elif lower.startswith("!delrol"):
@@ -376,17 +449,14 @@ async def on_message(message: discord.Message):
             try:
                 await user.remove_roles(rol, reason=f"Rol quitado por {message.author}")
                 exitos.append(user.name)
-            except:
+            except Exception as e:
+                log.warning(f"[delrol] {user.name}: {e}")
                 fallos.append(user.name)
         msg = ""
-        if exitos: msg += f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}\n"
-        if fallos: msg += f"❌ No pude quitárselo a: {', '.join(fallos)}"
+        if exitos:
+            msg += f"🗑️ Rol `{rol.name}` quitado a: {', '.join(exitos)}\n"
+        if fallos:
+            msg += f"❌ No pude quitárselo a: {', '.join(fallos)}"
         await message.channel.send(msg)
-
-    elif lower.startswith("!olvidame"):
-        cursor.execute("DELETE FROM memoria WHERE user_id =? AND canal_id =?",
-                      (message.author.id, message.channel.id))
-        db.commit()
-        await message.channel.send("✅ Ya te olvidé we, borrón y cuenta nueva")
 
 bot.run(TOKEN)
