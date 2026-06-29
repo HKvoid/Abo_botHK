@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 # ─────────────────────────────────────────
-# LOGGING + CONFIG
+# CONFIG
 # ─────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Abo")
@@ -30,10 +30,9 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents) # Cambiado a Bot
+bot = commands.Bot(command_prefix="!", intents=intents) # El! ya no se usa, pero Bot lo pide
 
-# VARIABLES GLOBALES PURGA
-ULTIMOS_FANTASMAS = {}
+ULTIMOS_FANTASMAS = {} # guild_id: [user_ids]
 
 # ─────────────────────────────────────────
 # CHECK PA STAFF
@@ -45,7 +44,7 @@ def is_staff():
     return app_commands.check(predicate)
 
 # ─────────────────────────────────────────
-# DB MEMORIA IGUAL
+# DB MEMORIA + IA IGUAL
 # ─────────────────────────────────────────
 db = sqlite3.connect("abo_memoria.db", check_same_thread=False)
 cursor = db.cursor()
@@ -61,9 +60,6 @@ def obtener_historial(user_id, canal_id, limite=30):
     cursor.execute("SELECT rol, contenido FROM memoria WHERE user_id =? AND canal_id =? ORDER BY timestamp DESC LIMIT?", (user_id, canal_id, limite))
     return list(reversed(cursor.fetchall()))
 
-# ─────────────────────────────────────────
-# IA IGUAL
-# ─────────────────────────────────────────
 SISTEMA_ABO = ("Eres Abo, bot de Discord. Respondes en máximo 2 oraciones. Usa 'we', 'nmms', 'pa'. Sé sarcástico pero COHERENTE.")
 async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
@@ -77,9 +73,9 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         log.error(f"[Groq Error] {e}"); return "Me bugueé we"
 
 # ─────────────────────────────────────────
-# COG COLORES - LO NUEVO 🔥
+# COG COLORES
 # ─────────────────────────────────────────
-COLOR_ROLES = { # Tus 20 colores de la foto
+COLOR_ROLES = {
     "Vivid Red": 0xE74C3C, "Orange": 0xE67E22, "Yellow": 0xF1C40F, "Green": 0x2ECC71, "Blue": 0x3498DB,
     "Purple": 0x9B59B6, "Pink": 0xFF69B4, "Cyan": 0x1ABC9C, "White": 0xECF0F1, "Black": 0x2C3E50,
     "Booster Gold": 0xFFD700, "Booster Silver": 0xC0C0C0, "Aurora": 0x00FFFF, "Neon": 0x39FF14, "Blood": 0x8B0000,
@@ -88,111 +84,152 @@ COLOR_ROLES = { # Tus 20 colores de la foto
 
 class ColorSelect(discord.ui.Select):
     def __init__(self):
-        options = [discord.SelectOption(label=name, description=f"Color {name}", emoji="🎨") for name in COLOR_ROLES.keys()]
+        options = [discord.SelectOption(label=name, emoji="🎨") for name in COLOR_ROLES.keys()]
         super().__init__(placeholder="Select a color", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        member = interaction.user
-        color_name = self.values[0]
-
-        # Quita todos los colores viejos
-        color_role_ids = [discord.utils.get(guild.roles, name=n).id for n in COLOR_ROLES.keys() if discord.utils.get(guild.roles, name=n)]
-        await member.remove_roles(*[guild.get_role(rid) for rid in color_role_ids if guild.get_role(rid)], reason="Cambio de color")
-
-        # Da el nuevo
+        guild, member, color_name = interaction.guild, interaction.user, self.values[0]
+        roles_a_quitar = [guild.get_role(discord.utils.get(guild.roles, name=n).id) for n in COLOR_ROLES.keys() if discord.utils.get(guild.roles, name=n)]
+        if roles_a_quitar: await member.remove_roles(*roles_a_quitar, reason="Cambio de color")
         new_role = discord.utils.get(guild.roles, name=color_name)
-        if new_role:
-            await member.add_roles(new_role)
-            await interaction.followup.send(f"You changed your color to {new_role.mention}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ No existe el rol `{color_name}`. Crea los roles primero we.", ephemeral=True)
+        if new_role: await member.add_roles(new_role); await interaction.followup.send(f"You changed your color to {new_role.mention}", ephemeral=True)
+        else: await interaction.followup.send(f"❌ No existe el rol `{color_name}`. Usa `/create_colors` we.", ephemeral=True)
 
 class ColorView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None); self.add_item(ColorSelect())
 
 class ColorsCog(commands.Cog):
     def __init__(self, bot): self.bot = bot
-
     @app_commands.command(name="color", description="Abre el menú pa cambiar tu color")
-    async def color_menu(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Elige tu color:", view=ColorView(), ephemeral=True)
-
+    async def color_menu(self, interaction: discord.Interaction): await interaction.response.send_message("Elige tu color:", view=ColorView(), ephemeral=True)
     @app_commands.command(name="create_colors", description="[Staff] Crea los 20 roles de color si no existen")
     @is_staff()
     async def create_colors(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        creados = 0
+        await interaction.response.defer(ephemeral=True); creados = 0
         for name, hex in COLOR_ROLES.items():
             if not discord.utils.get(interaction.guild.roles, name=name):
-                await interaction.guild.create_role(name=name, colour=discord.Colour(hex), reason="Abo Colors")
-                creados += 1
-        await interaction.followup.send(f"✅ Creados {creados} roles de color. Los otros ya existían.", ephemeral=True)
-
-async def setup_cogs(bot):
-    await bot.add_cog(ColorsCog(bot))
+                await interaction.guild.create_role(name=name, colour=discord.Colour(hex), reason="Abo Colors"); creados += 1
+        await interaction.followup.send(f"✅ Creados {creados} roles. Los otros ya existían.", ephemeral=True)
 
 # ─────────────────────────────────────────
-# EVENTOS + COMANDOS VIEJOS A SLASH
+# COG MODERACIÓN - TODO A /
+# ─────────────────────────────────────────
+class ModCog(commands.Cog):
+    def __init__(self, bot): self.bot = bot
+
+    @app_commands.command(name="ban", description="[Staff] Banea a un usuario")
+    @app_commands.describe(user="A quién banear", reason="Razón del ban")
+    @is_staff()
+    async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str = "Se pasó de verga"):
+        await interaction.response.defer(ephemeral=True)
+        try: await user.ban(reason=f"{reason} | By {interaction.user}"); await interaction.followup.send(f"🔨 {user.mention} desterrado alv. Razón: {reason}")
+        except discord.Forbidden: await interaction.followup.send("❌ No tengo permisos pa banearlo we")
+
+    @app_commands.command(name="mute", description="[Staff] Da timeout a un usuario")
+    @app_commands.describe(user="A quién mutear", time="10m, 2h, 1d")
+    @is_staff()
+    async def mute(self, interaction: discord.Interaction, user: discord.Member, time: str = "10m"):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            mult = {"m": 60, "h": 3600, "d": 86400}; tiempo_seg = int(time[:-1]) * mult[time[-1]]
+            await user.timeout(timedelta(seconds=tiempo_seg), reason=f"Muted by {interaction.user}")
+            await interaction.followup.send(f"🤐 {user.mention} silenciado por {time}")
+        except: await interaction.followup.send("❌ Tiempo inválido we. Usa `10m`, `2h`, `1d`")
+
+    @app_commands.command(name="limpia", description="[Staff] Borra mensajes")
+    @app_commands.describe(amount="Cantidad 1-100")
+    @is_staff()
+    async def limpia(self, interaction: discord.Interaction, amount: int = 5):
+        if amount > 100: amount = 100
+        await interaction.response.defer(ephemeral=True)
+        borrados = await interaction.channel.purge(limit=amount + 1)
+        await interaction.followup.send(f"🧹 {len(borrados)-1} mensajes alv", ephemeral=True)
+
+    @app_commands.command(name="addrol", description="[Staff] Da un rol a varios users")
+    @is_staff()
+    async def addrol(self, interaction: discord.Interaction, rol: discord.Role, users: str):
+        await interaction.response.defer(ephemeral=True)
+        mentions = re.findall(r'<@!?(\d+)>', users); exitos, fallos = [], []
+        for uid in mentions:
+            user = interaction.guild.get_member(int(uid))
+            if user:
+                try: await user.add_roles(rol); exitos.append(user.name)
+                except: fallos.append(user.name)
+        await interaction.followup.send(f"✅ Dado a: {', '.join(exitos)}\n❌ Falló: {', '.join(fallos)}" if fallos else f"✅ Dado a: {', '.join(exitos)}")
+
+    @app_commands.command(name="delrol", description="[Staff] Quita un rol a varios users")
+    @is_staff()
+    async def delrol(self, interaction: discord.Interaction, rol: discord.Role, users: str):
+        await interaction.response.defer(ephemeral=True)
+        mentions = re.findall(r'<@!?(\d+)>', users); exitos, fallos = [], []
+        for uid in mentions:
+            user = interaction.guild.get_member(int(uid))
+            if user:
+                try: await user.remove_roles(rol); exitos.append(user.name)
+                except: fallos.append(user.name)
+        await interaction.followup.send(f"🗑️ Quitado a: {', '.join(exitos)}\n❌ Falló: {', '.join(fallos)}" if fallos else f"🗑️ Quitado a: {', '.join(exitos)}")
+
+# ─────────────────────────────────────────
+# COG PURGA
+# ─────────────────────────────────────────
+class PurgaCog(commands.Cog):
+    def __init__(self, bot): self.bot = bot
+    @app_commands.command(name="scan", description="[Staff] Busca miembros con 0 mensajes en 15d")
+    @is_staff()
+    async def scan(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        rol_miembro = discord.utils.get(interaction.guild.roles, name=ROL_MIEMBRO)
+        if not rol_miembro: return await interaction.followup.send(f"No hay rol '{ROL_MIEMBRO}' we")
+        todos = {m.id: m for m in rol_miembro.members if not m.bot}; actividad = {mid: 0 for mid in todos.keys()}
+        hace_15dias = discord.utils.utcnow() - timedelta(days=15)
+        for canal in interaction.guild.text_channels:
+            if not canal.permissions_for(interaction.guild.me).read_message_history: continue
+            async for msg in canal.history(limit=None, after=hace_15dias):
+                if msg.author.id in actividad: actividad[msg.author.id] += 1
+        fantasmas_ids = [mid for mid, count in actividad.items() if count == 0]
+        ULTIMOS_FANTASMAS[interaction.guild.id] = fantasmas_ids
+        if fantasmas_ids:
+            mentions = [interaction.guild.get_member(mid).mention for mid in fantasmas_ids[:20]]
+            await interaction.followup.send(f"**Tiesos 15d:** {len(fantasmas_ids)}\n{', '.join(mentions)}\nUsa `/purgaafk` pa patearlos")
+        else: await interaction.followup.send("No hay tiesos we 🔥")
+
+    @app_commands.command(name="purgaafk", description="[Staff] Patea a los del último /scan")
+    @is_staff()
+    async def purgaafk(self, interaction: discord.Interaction):
+        guild_id = interaction.guild.id
+        if guild_id not in ULTIMOS_FANTASMAS or not ULTIMOS_FANTASMAS[guild_id]:
+            return await interaction.response.send_message("Primero haz un `/scan` we", ephemeral=True)
+        await interaction.response.defer()
+        pateados = 0
+        for user_id in ULTIMOS_FANTASMAS[guild_id]:
+            user = interaction.guild.get_member(user_id)
+            if user and not user.bot:
+                try: await user.kick(reason="Inactividad 15d - Abo"); pateados += 1; await asyncio.sleep(0.5)
+                except: pass
+        await interaction.followup.send(f"✅ Purga terminada: {pateados} pateados")
+        ULTIMOS_FANTASMAS[guild_id] = []
+
+# ─────────────────────────────────────────
+# EVENTOS
 # ─────────────────────────────────────────
 @bot.event
 async def on_ready():
-    await setup_cogs(bot)
-    await bot.tree.sync() # REGISTRA LOS /
-    log.info(f"Online: {bot.user} | Slash Commands listos")
+    await bot.add_cog(ColorsCog(bot)); await bot.add_cog(ModCog(bot)); await bot.add_cog(PurgaCog(bot))
+    await bot.tree.sync() # REGISTRA TODO A DISCORD
+    log.info(f"Online: {bot.user} | {len(bot.tree.get_commands())} slash commands cargados")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="LatamOS"))
 
 @bot.event
-async def on_message(message: discord.Message): # IA por mención se queda igual
+async def on_message(message: discord.Message): # La IA por mención se queda
     if message.author.bot: return
     if bot.user in message.mentions:
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
-        async with message.channel.typing():
-            respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
+        async with message.channel.typing(): respuesta = await preguntar_ia(texto, message.author.id, message.channel.id)
         await message.channel.send(respuesta.replace("@everyone", "@\u200beveryone"), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
 
-# EJEMPLO:!scan pasado a /scan
-@bot.tree.command(name="scan", description="[Staff] Busca miembros con 0 mensajes en 15d")
-@is_staff()
-async def scan(interaction: discord.Interaction):
-    await interaction.response.defer()
-    rol_miembro = discord.utils.get(interaction.guild.roles, name=ROL_MIEMBRO)
-    if not rol_miembro: return await interaction.followup.send(f"No hay rol '{ROL_MIEMBRO}' we")
-
-    todos = {m.id: m for m in rol_miembro.members if not m.bot}
-    actividad = {mid: 0 for mid in todos.keys()}
-    hace_15dias = discord.utils.utcnow() - timedelta(days=15)
-    for canal in interaction.guild.text_channels:
-        if not canal.permissions_for(interaction.guild.me).read_message_history: continue
-        async for msg in canal.history(limit=None, after=hace_15dias):
-            if msg.author.id in actividad: actividad[msg.author.id] += 1
-
-    fantasmas_ids = [mid for mid, count in actividad.items() if count == 0]
-    ULTIMOS_FANTASMAS[interaction.guild.id] = fantasmas_ids
-    if fantasmas_ids:
-        mentions = [interaction.guild.get_member(mid).mention for mid in fantasmas_ids[:20]]
-        await interaction.followup.send(f"**Tiesos 15d:** {len(fantasmas_ids)}\n{', '.join(mentions)}\nUsa `/purgaafk` pa patearlos")
-    else:
-        await interaction.followup.send("No hay tiesos we 🔥")
-
-@bot.tree.command(name="purgaafk", description="[Staff] Patea a los del último /scan")
-@is_staff()
-async def purgaafk(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    if guild_id not in ULTIMOS_FANTASMAS or not ULTIMOS_FANTASMAS[guild_id]:
-        return await interaction.response.send_message("Primero haz un `/scan` we", ephemeral=True)
-
-    await interaction.response.defer()
-    pateados = 0
-    for user_id in ULTIMOS_FANTASMAS[guild_id]:
-        user = interaction.guild.get_member(user_id)
-        if user and not user.bot:
-            try: await user.kick(reason="Inactividad 15d - Abo"); pateados += 1; await asyncio.sleep(0.5)
-            except: pass
-    await interaction.followup.send(f"✅ Purga terminada: {pateados} pateados")
-    ULTIMOS_FANTASMAS[guild_id] = []
-
-# TUS OTROS!ban!mute!limpia pásalos igual a @bot.tree.command()
+    # Bloqueo de! viejos
+    if message.content.startswith("!") and not await bot.is_owner(message.author):
+        await message.channel.send("Waos, ya son `/` we", delete_after=3)
 
 bot.run(TOKEN)
