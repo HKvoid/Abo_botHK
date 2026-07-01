@@ -20,7 +20,7 @@ TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220
 ROL_MIEMBRO = "MemberLT"
-ROLES_COMANDOS = ["Admin", "Mod", "Shogun 🦈 ", "ViceRoot", "Root", "Daimyō", "Rōnin"]
+ROLES_COMANDOS = ["Admin", "Mod", "Shogun 🦈", "ViceRoot", "Root", "Daimyō", "Rōnin"]
 
 if not TOKEN or not GROQ_API_KEY:
     raise RuntimeError("❌ Falta TOKEN o GROQ_API_KEY")
