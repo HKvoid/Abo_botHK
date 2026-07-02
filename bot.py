@@ -179,7 +179,7 @@ STAFF_COLOR_ROLES = [
     "Phoenix Ember",
     "Cyan Sand",
     "Abyssal Echo",
-    "Lunar Silk",
+    "Blush Nocturne",
     "Aurora Borealis",
 ]
 
