@@ -180,7 +180,7 @@ STAFF_COLOR_ROLES = [
     "Cyan Sand",
     "Abyssal Echo",
     "Blush Nocturne",
-    "Aurora Borealis",
+    "Stellar Plum",
 ]
 
 class StaffColorSelect(discord.ui.Select):
