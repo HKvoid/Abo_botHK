@@ -174,7 +174,7 @@ STAFF_COLOR_ROLES = [
     "Ignis Petal",
     "Arctic Sky",
     "Midnight Pulse",
-    "Peach Parfait",
+    "Toxic",
     "Electric Soul",
     "Phoenix Ember",
     "Cyan Sand",
