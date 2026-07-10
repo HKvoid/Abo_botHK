@@ -171,16 +171,14 @@ class ColorsCog(commands.Cog):
 # Aquí solo se listan los NOMBRES exactos de esos roles para que aparezcan en el menú.
 # ─────────────────────────────────────────
 STAFF_COLOR_ROLES = [
-    "Ignis Petal",
-    "Arctic Sky",
-    "Midnight Pulse",
-    "Toxic",
-    "Electric Soul",
-    "Phoenix Ember",
-    "Cyan Sand",
-    "Abyssal Echo",
-    "Blush Nocturne",
-    "Stellar Plum",
+    "CStaff1",
+    "CStaff2",
+    "CStaff3",
+    "CStaff4",
+    "CStaff5",
+    "CStaff6",
+    "CStaff7",
+    "CStaff8",
 ]
 
 class StaffColorSelect(discord.ui.Select):
