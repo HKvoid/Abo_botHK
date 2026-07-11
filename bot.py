@@ -19,7 +19,7 @@ log = logging.getLogger("Abo")
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TU_ID = 1180967503682355220
-ROL_MIEMBRO = "MemberLT"
+ROL_MIEMBRO = "Miembro"
 ROLES_COMANDOS = ["Admin", "Moderador", "Shogun 🦈", "ViceRoot", "Root", "Daimyō", "Rōnin"]
 ROLES_STAFF_COLOR = ["Staff"]
 
