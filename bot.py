@@ -18,7 +18,7 @@ log = logging.getLogger("Abo")
 
 TOKEN = os.getenv("TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TU_ID = (1180967503682355220, 1518454575554625544)
+TU_ID = 1518454575554625544
 ROL_VERIFICADO_ID = 1517969743812755456  # rol que se asigna con !verificar
 ROL_MIEMBRO = "Miembro"
 ROLES_COMANDOS = ["Admin", "Moderador", "Shogun 🦈", "ViceRoot", "Root", "Daimyō", "Rōnin"]
