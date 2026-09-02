@@ -147,7 +147,7 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         # el event loop de discord.py (si no, el bot entero se congela mientras espera la IA).
         chat = await asyncio.to_thread(
             groq_client.chat.completions.create,
-            model = "llama-3.1-8b-instant", messages=mensajes, max_tokens=150, temperature=0.9
+            model = "llama-3.3-70b-versatile", messages=mensajes, max_tokens=150, temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
         guardar_mensaje(user_id, canal_id, "user", prompt); guardar_mensaje(user_id, canal_id, "assistant", respuesta)
