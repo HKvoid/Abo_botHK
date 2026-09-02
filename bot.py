@@ -157,7 +157,7 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         # tokens para el contenido final y devolvía la respuesta vacía.
         chat = await asyncio.to_thread(
             groq_client.chat.completions.create,
-            model = "openai/gpt-oss-20b", messages=mensajes, max_tokens=500, temperature=0.9
+            model = "qwen/qwen3.8-27b", messages=mensajes, max_tokens=500, temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
         guardar_mensaje(user_id, canal_id, "user", prompt); guardar_mensaje(user_id, canal_id, "assistant", respuesta)
