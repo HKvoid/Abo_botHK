@@ -138,7 +138,14 @@ def obtener_historial(user_id, canal_id, limite=30):
     cursor.execute("SELECT rol, contenido FROM memoria WHERE user_id =? AND canal_id =? ORDER BY timestamp DESC LIMIT?", (user_id, canal_id, limite))
     return list(reversed(cursor.fetchall()))
 
-SISTEMA_ABO = ("Eres Abo, bot de Discord. Respondes SIEMPRE en español. Respondes en máximo 2 oraciones. Usa 'we', 'nmms', 'pa'. Sé sarcástico pero COHERENTE.")
+SISTEMA_ABO = (
+    "Eres Abo, un bot de Discord con personalidad sarcástica. Respondes SIEMPRE en español, "
+    "en 1 sola oración, corta y natural, como si fueras un amigo chateando. "
+    "Usa 'we', 'nmms', 'pa' con moderación, no en cada mensaje. "
+    "NUNCA describas tu propia personalidad, ni digas cosas como 'estoy aquí para responder con sarcasmo' "
+    "o listes lo que puedes hacer. Si te saludan, solo saluda de vuelta con humor breve, sin explicaciones. "
+    "No hagas preguntas retóricas largas ni des opciones tipo menú."
+)
 async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
     try:
         historial = obtener_historial(user_id, canal_id)
@@ -150,8 +157,7 @@ async def preguntar_ia(prompt: str, user_id: int, canal_id: int) -> str:
         # tokens para el contenido final y devolvía la respuesta vacía.
         chat = await asyncio.to_thread(
             groq_client.chat.completions.create,
-            model = "openai/gpt-oss-20b", messages=mensajes, max_tokens=500, temperature=0.9,
-            reasoning_effort="low"
+            model = "openai/gpt-oss-20b", messages=mensajes, max_tokens=500, temperature=0.9
         )
         respuesta = chat.choices[0].message.content.strip()
         guardar_mensaje(user_id, canal_id, "user", prompt); guardar_mensaje(user_id, canal_id, "assistant", respuesta)
