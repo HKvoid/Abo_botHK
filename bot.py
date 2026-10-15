@@ -69,10 +69,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         log.error("[Command Error] %s: %s", interaction.command, error)
         msg = "Algo salió mal ejecutando el comando; inténtalo de nuevo en un momento 😅"
     try:
+        embed = discord.Embed(title="Abo encontró un problema", description=msg, color=0xED4245)
+        embed.set_footer(text="Abo · Revisa los permisos o inténtalo de nuevo")
         if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
     except discord.HTTPException:
         pass
 

@@ -16,3 +16,9 @@ Crea y guarda los diseños desde el dashboard. En Discord ejecuta `/ticket_panel
 ## Estilos, imagen y privacidad
 
 Cada botón admite estilo oscuro, verde vivo, rojo vivo o azul, y cada panel puede llevar una imagen pública en su embed. Al reclamar un ticket, el bot oculta el canal al rol general de staff y lo deja visible para el creador y el responsable. Al cerrarlo, guarda primero la transcripción y después elimina el canal automáticamente; si Discord no permite borrarlo, conserva el canal y registra el error.
+
+## Últimas mejoras
+
+- Las imágenes de los paneles se cargan como archivos desde el dashboard y se almacenan en Neon; ya no se pide una URL.
+- Los botones de los paneles crean el ticket directamente, sin formulario.
+- Las interacciones principales de tickets usan embeds visuales con colores, títulos y pies de Abo.
