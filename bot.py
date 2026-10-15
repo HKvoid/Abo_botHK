@@ -17,7 +17,7 @@ from cogs.purge import PurgaCog
 from cogs.warns import WarnsCog
 from cogs.reset import ResetCog
 from cogs.help import HelpCog
-from cogs.tickets import TicketCog, TicketPanelView, TicketControlView
+from cogs.tickets import TicketCog, TicketPanelView, TicketControlView, load_configured_ticket_views
 from cogs.greetings import GreetingsCog
 
 intents = discord.Intents.default()
@@ -33,6 +33,7 @@ class AboBot(commands.Bot):
         self.add_view(ColorMenuView())
         self.add_view(TicketPanelView())
         self.add_view(TicketControlView())
+        await load_configured_ticket_views(self)
         cogs = (
             ColorsCog, StaffColorsCog, BoosterColorsCog, ModCog,
             PurgaCog, WarnsCog, TicketCog, GreetingsCog, HelpCog, ResetCog,

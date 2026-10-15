@@ -8,3 +8,7 @@ Este proyecto es el bot de Discord. El dashboard es un proyecto separado y se en
 - El dashboard lee y escribe `guild_settings`, `warns`, `tickets`, `purge_exceptions`, `color_roles` y `memory`, las mismas tablas que usa este bot.
 
 Despliega este proyecto como worker ejecutando `python bot.py` y el dashboard como servicio web separado.
+
+## Múltiples paneles
+
+Crea y guarda los diseños desde el dashboard. En Discord ejecuta `/ticket_panel`, elige el canal y selecciona el panel por nombre en el campo opcional `panel`. Cada panel usa botones persistentes diferentes y continúa funcionando después de reiniciar el bot.
