@@ -16,6 +16,12 @@ from database import db
 _ticket_locks: dict[tuple[int, int], asyncio.Lock] = {}
 
 
+def _ticket_notice(title: str, description: str, color: int = 0x5865F2) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.set_footer(text="Abo · Sistema de tickets")
+    return embed
+
+
 def _ticket_name(member: discord.Member) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", member.display_name.lower()).strip("-")
     return f"ticket-{(slug or 'usuario')[:85]}"
@@ -34,7 +40,7 @@ async def _create_ticket(interaction: discord.Interaction, title: str, details: 
     guild = interaction.guild
     member = interaction.user
     if guild is None or not isinstance(member, discord.Member):
-        return await interaction.followup.send("Los tickets solo se pueden abrir dentro del servidor.", ephemeral=True)
+        return await interaction.followup.send(embed=_ticket_notice("Acción no disponible", "Los tickets solo se pueden abrir dentro del servidor.", 0xED4245), ephemeral=True)
 
     lock = _ticket_locks.setdefault((guild.id, member.id), asyncio.Lock())
     async with lock:
@@ -47,7 +53,7 @@ async def _create_ticket(interaction: discord.Interaction, title: str, details: 
             channel = guild.get_channel(existing["channel_id"])
             if channel:
                 return await interaction.followup.send(
-                    f"Ya tienes un ticket abierto: {channel.mention}", ephemeral=True,
+                    embed=_ticket_notice("Ticket ya abierto", f"Ya tienes un ticket abierto: {channel.mention}", 0xFEE75C), ephemeral=True,
                 )
             await db.execute(
                 "UPDATE tickets SET status = 'closed', closed_at = NOW() WHERE channel_id = $1",
@@ -126,7 +132,10 @@ async def _create_ticket(interaction: discord.Interaction, title: str, details: 
             view=TicketControlView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
         )
-        await interaction.followup.send(f"Tu ticket está listo: {channel.mention}", ephemeral=True)
+        await interaction.followup.send(
+            embed=_ticket_notice("Ticket creado 🎫", f"Tu ticket está listo: {channel.mention}\n\nEl staff podrá atenderte en breve."),
+            ephemeral=True,
+        )
 
 
 async def _make_transcript(channel: discord.TextChannel) -> bytes:
@@ -153,19 +162,14 @@ async def _make_transcript(channel: discord.TextChannel) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-class TicketCreateModal(discord.ui.Modal, title="Abrir un ticket"):
-    asunto = discord.ui.TextInput(
-        label="Asunto", placeholder="¿En qué podemos ayudarte?", max_length=100, required=True,
+async def _open_ticket_directly(interaction: discord.Interaction, label: str):
+    """Crea el ticket sin modal; el botón define el tipo de solicitud."""
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await _create_ticket(
+        interaction,
+        label.strip()[:100] or "Soporte",
+        f"Solicitud creada desde el panel: {label.strip() or 'Soporte'}.",
     )
-    detalles = discord.ui.TextInput(
-        label="Detalles", style=discord.TextStyle.paragraph,
-        placeholder="Describe tu solicitud con el mayor detalle posible.",
-        min_length=5, max_length=1500, required=True,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await _create_ticket(interaction, self.asunto.value.strip(), self.detalles.value.strip())
 
 
 class TicketPanelView(discord.ui.View):
@@ -178,7 +182,7 @@ class TicketPanelView(discord.ui.View):
         emoji="🎫", custom_id="abo:ticket:create:v1",
     )
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketCreateModal())
+        await _open_ticket_directly(interaction, button.label or "Crear ticket")
 
 
 def _panel_style(value: str) -> discord.ButtonStyle:
@@ -223,7 +227,7 @@ class ConfiguredTicketPanelView(discord.ui.View):
     @staticmethod
     def _open_modal(label: str):
         async def callback(interaction: discord.Interaction):
-            await interaction.response.send_modal(TicketCreateModal())
+            await _open_ticket_directly(interaction, label)
         return callback
 
 
@@ -245,17 +249,17 @@ class TicketControlView(discord.ui.View):
     )
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Acción disponible solo en el servidor.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Acción no disponible", "Esta acción solo está disponible dentro del servidor.", 0xED4245), ephemeral=True)
         ticket = await db.fetchrow(
             "SELECT id, status, claimed_by FROM tickets WHERE channel_id = $1",
             interaction.channel_id,
         )
         if not ticket or ticket["status"] != "open":
-            return await interaction.response.send_message("Este ticket ya está cerrado o no existe.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Ticket no disponible", "Este ticket ya está cerrado o no existe.", 0xFEE75C), ephemeral=True)
         if not await _is_ticket_staff(interaction.user, interaction.guild.id):
-            return await interaction.response.send_message("Solo el staff puede reclamar tickets.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Permisos insuficientes", "Solo el staff puede reclamar tickets.", 0xED4245), ephemeral=True)
         if ticket["claimed_by"] and ticket["claimed_by"] != interaction.user.id:
-            return await interaction.response.send_message("Este ticket ya lo está atendiendo otro miembro del staff.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Ticket ocupado", "Este ticket ya lo está atendiendo otro miembro del staff.", 0xFEE75C), ephemeral=True)
         await db.execute(
             "UPDATE tickets SET claimed_by = $1 WHERE channel_id = $2 AND status = 'open'",
             interaction.user.id, interaction.channel_id,
@@ -278,7 +282,7 @@ class TicketControlView(discord.ui.View):
             except (discord.Forbidden, discord.HTTPException) as error:
                 log.warning("No se pudo restringir el ticket %s al reclamarlo: %s", interaction.channel_id, error)
         await interaction.response.send_message(
-            f"{interaction.user.mention} se hará cargo de este ticket.",
+            embed=_ticket_notice("Ticket reclamado 🙋", f"{interaction.user.mention} se hará cargo de este ticket.", 0x57F287),
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
 
@@ -288,16 +292,16 @@ class TicketControlView(discord.ui.View):
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Acción disponible solo en el servidor.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Acción no disponible", "Esta acción solo está disponible dentro del servidor.", 0xED4245), ephemeral=True)
         ticket = await db.fetchrow(
             "SELECT id, opener_id, status FROM tickets WHERE channel_id = $1",
             interaction.channel_id,
         )
         if not ticket or ticket["status"] != "open":
-            return await interaction.response.send_message("Este ticket ya está cerrado o no existe.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Ticket no disponible", "Este ticket ya está cerrado o no existe.", 0xFEE75C), ephemeral=True)
         is_opener = ticket["opener_id"] == interaction.user.id
         if not is_opener and not await _is_ticket_staff(interaction.user, interaction.guild.id):
-            return await interaction.response.send_message("Solo quien abrió el ticket o el staff puede cerrarlo.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Permisos insuficientes", "Solo quien abrió el ticket o el staff puede cerrarlo.", 0xED4245), ephemeral=True)
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel = interaction.channel
@@ -342,8 +346,7 @@ class TicketControlView(discord.ui.View):
             except discord.Forbidden:
                 log.warning("No se pudieron ajustar permisos al cerrar ticket %s", ticket["id"])
         await interaction.followup.send(
-            "Ticket cerrado. La transcripción se guardó en el canal de registros." if transcript_message
-            else "Ticket cerrado. La transcripción quedó conservada en Neon, pero no pude enviarla al canal de registros.",
+            embed=_ticket_notice("Ticket cerrado 🔒", "La transcripción se guardó en el canal de registros." if transcript_message else "La transcripción quedó conservada en Neon, pero no pude enviarla al canal de registros.", 0x57F287),
             ephemeral=True,
         )
         try:
@@ -415,7 +418,7 @@ class TicketCog(commands.Cog):
                 panel_id, interaction.guild_id,
             )
             if not selected:
-                return await interaction.response.send_message("Ese panel no existe en este servidor.", ephemeral=True)
+                return await interaction.response.send_message(embed=_ticket_notice("Panel no encontrado", "Ese panel no existe en este servidor.", 0xED4245), ephemeral=True)
 
         if selected:
             title = selected["title"]
@@ -444,7 +447,7 @@ class TicketCog(commands.Cog):
             )
         suffix = f" **{selected['name']}**" if selected else ""
         await interaction.response.send_message(
-            f"Panel{suffix} publicado en {canal.mention}.", ephemeral=True,
+            embed=_ticket_notice("Panel publicado ✨", f"Panel{suffix} publicado en {canal.mention}."), ephemeral=True,
         )
 
     @ticket_panel.autocomplete("panel")
@@ -460,7 +463,7 @@ class TicketCog(commands.Cog):
     @app_commands.describe(canal="Canal del ticket cerrado")
     async def ticket_transcript(self, interaction: discord.Interaction, canal: discord.TextChannel):
         if canal.guild.id != interaction.guild_id:
-            return await interaction.response.send_message("Ese canal no pertenece a este servidor.", ephemeral=True)
+            return await interaction.response.send_message(embed=_ticket_notice("Canal inválido", "Ese canal no pertenece a este servidor.", 0xED4245), ephemeral=True)
         ticket = await db.fetchrow(
             "SELECT id, opener_id, transcript_html FROM tickets WHERE channel_id = $1",
             canal.id,
