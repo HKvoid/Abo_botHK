@@ -1,0 +1,7 @@
+.env
+.env.*.local
+abo_memoria.db
+__pycache__/
+*.py[cod]
+.venv/
+venv/

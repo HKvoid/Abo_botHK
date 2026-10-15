@@ -4,6 +4,9 @@ import re
 import discord
 from discord import app_commands
 from discord.ext import commands
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from core import TOKEN, db, log, preguntar_ia
 from cogs.colors import ColorMenuView, ColorsCog
@@ -14,6 +17,8 @@ from cogs.purge import PurgaCog
 from cogs.warns import WarnsCog
 from cogs.reset import ResetCog
 from cogs.help import HelpCog
+from cogs.tickets import TicketCog, TicketPanelView, TicketControlView
+from cogs.greetings import GreetingsCog
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -22,16 +27,26 @@ intents.members = True
 
 class AboBot(commands.Bot):
     async def setup_hook(self):
+        await db.connect()
+        log.info("Conexión persistente a Neon inicializada")
         # La vista persistente se registra una vez al iniciar, incluso tras reinicios.
         self.add_view(ColorMenuView())
+        self.add_view(TicketPanelView())
+        self.add_view(TicketControlView())
         cogs = (
             ColorsCog, StaffColorsCog, BoosterColorsCog, ModCog,
-            PurgaCog, WarnsCog, HelpCog, ResetCog,
+            PurgaCog, WarnsCog, TicketCog, GreetingsCog, HelpCog, ResetCog,
         )
         for cog_class in cogs:
             await self.add_cog(cog_class(self))
         await self.tree.sync()
         log.info("Cogs cargados y comandos slash sincronizados: %s", len(self.tree.get_commands()))
+
+    async def close(self):
+        try:
+            await super().close()
+        finally:
+            await db.close()
 
 
 bot = AboBot(command_prefix=commands.when_mentioned, intents=intents)
@@ -76,7 +91,4 @@ async def on_message(message: discord.Message):
 
 
 if __name__ == "__main__":
-    try:
-        bot.run(TOKEN)
-    finally:
-        db.close()
+    bot.run(TOKEN)
