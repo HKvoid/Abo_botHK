@@ -2,6 +2,7 @@
 import asyncio
 import html
 import io
+import json
 import re
 
 import asyncpg
@@ -168,6 +169,7 @@ class TicketCreateModal(discord.ui.Modal, title="Abrir un ticket"):
 
 
 class TicketPanelView(discord.ui.View):
+    """Panel heredado para que los mensajes antiguos sigan funcionando."""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -177,6 +179,49 @@ class TicketPanelView(discord.ui.View):
     )
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketCreateModal())
+
+
+def _panel_buttons(raw: str) -> list[dict[str, str]]:
+    try:
+        buttons = json.loads(raw or "[]")
+    except (TypeError, json.JSONDecodeError):
+        buttons = []
+    result = []
+    for item in buttons if isinstance(buttons, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "")).strip()[:40]
+        if label:
+            result.append({"emoji": str(item.get("emoji", "🎫"))[:8] or "🎫", "label": label})
+    return result[:10] or [{"emoji": "🎫", "label": "Crear ticket"}]
+
+
+class ConfiguredTicketPanelView(discord.ui.View):
+    """Vista persistente construida desde un panel guardado en Neon."""
+    def __init__(self, panel_id: int, buttons: list[dict[str, str]]):
+        super().__init__(timeout=None)
+        for index, item in enumerate(buttons):
+            button = discord.ui.Button(
+                label=item["label"], emoji=item["emoji"],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"abo:ticket:panel:{panel_id}:button:{index}",
+            )
+            button.callback = self._open_modal(item["label"])
+            self.add_item(button)
+
+    @staticmethod
+    def _open_modal(label: str):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(TicketCreateModal())
+        return callback
+
+
+async def load_configured_ticket_views(bot) -> None:
+    """Registra todos los botones guardados para que sobrevivan a reinicios."""
+    rows = await db.fetch("SELECT id, buttons, message_id FROM ticket_panels")
+    for row in rows:
+        view = ConfiguredTicketPanelView(row["id"], _panel_buttons(row["buttons"]))
+        bot.add_view(view, message_id=row["message_id"] or None)
 
 
 class TicketControlView(discord.ui.View):
@@ -313,11 +358,16 @@ class TicketCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="ticket_panel", description="Publica el panel para abrir tickets")
+    @app_commands.command(name="ticket_panel", description="Publica un panel de tickets guardado en el dashboard")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(canal="Canal donde publicar el panel de tickets")
-    async def ticket_panel(self, interaction: discord.Interaction, canal: discord.TextChannel):
+    @app_commands.describe(
+        canal="Canal donde publicar el panel de tickets",
+        panel="Panel guardado que quieres publicar",
+    )
+    async def ticket_panel(
+        self, interaction: discord.Interaction, canal: discord.TextChannel, panel: str | None = None,
+    ):
         settings = await db.get_settings(interaction.guild_id)
         if not all(settings.get(key) for key in (
             "ticket_category_id", "ticket_staff_role_id", "ticket_log_channel_id",
@@ -325,17 +375,53 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message(
                 "Primero configura el sistema con `/ticket_config`.", ephemeral=True,
             )
-        embed = discord.Embed(
-            title="Centro de soporte 🎫",
-            description=(
+
+        selected = None
+        if panel:
+            try:
+                panel_id = int(panel)
+            except ValueError:
+                panel_id = 0
+            selected = await db.fetchrow(
+                "SELECT id, name, title, description, buttons FROM ticket_panels WHERE id=$1 AND guild_id=$2",
+                panel_id, interaction.guild_id,
+            )
+            if not selected:
+                return await interaction.response.send_message("Ese panel no existe en este servidor.", ephemeral=True)
+
+        if selected:
+            title = selected["title"]
+            description = selected["description"]
+            buttons = _panel_buttons(selected["buttons"])
+            view = ConfiguredTicketPanelView(selected["id"], buttons)
+        else:
+            title = settings.get("ticket_panel_title") or "Centro de soporte 🎫"
+            description = settings.get("ticket_panel_description") or (
                 "Pulsa **Crear ticket** para abrir una conversación privada con el staff. "
                 "Describe el asunto y los detalles en el formulario."
-            ),
-            color=0x5865F2,
-        )
+            )
+            view = TicketPanelView()
+
+        embed = discord.Embed(title=title[:256], description=description[:4096], color=0x5865F2)
         embed.set_footer(text=f"{interaction.guild.name} · Soporte")
-        await canal.send(embed=embed, view=TicketPanelView())
-        await interaction.response.send_message(f"Panel de tickets publicado en {canal.mention}.", ephemeral=True)
+        message = await canal.send(embed=embed, view=view)
+        if selected:
+            await db.execute(
+                "UPDATE ticket_panels SET channel_id=$1, message_id=$2, updated_at=NOW() WHERE id=$3",
+                canal.id, message.id, selected["id"],
+            )
+        suffix = f" **{selected['name']}**" if selected else ""
+        await interaction.response.send_message(
+            f"Panel{suffix} publicado en {canal.mention}.", ephemeral=True,
+        )
+
+    @ticket_panel.autocomplete("panel")
+    async def ticket_panel_autocomplete(self, interaction: discord.Interaction, current: str):
+        rows = await db.fetch(
+            "SELECT id, name FROM ticket_panels WHERE guild_id=$1 AND name ILIKE $2 ORDER BY name LIMIT 25",
+            interaction.guild_id, f"%{current}%",
+        )
+        return [app_commands.Choice(name=row["name"][:100], value=str(row["id"])) for row in rows]
 
     @app_commands.command(name="ticket_transcript", description="Descarga una transcripción guardada en Neon")
     @app_commands.guild_only()
