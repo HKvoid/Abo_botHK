@@ -4,8 +4,9 @@ from datetime import timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
-from core import (ULTIMOS_FANTASMAS, ROL_MIEMBRO, is_staff, listar_excepciones,
+from core import (ROL_MIEMBRO, is_staff, listar_excepciones,
                   agregar_excepcion, quitar_excepcion, es_excepcion, log)
+from database import db
 
 async def recolectar_canales_con_historial(guild: discord.Guild):
     """Junta TODOS los canales/hilos del server donde puede haber mensajes:
@@ -79,10 +80,10 @@ class PurgaCog(commands.Cog):
                 log.error(f"[Scan canal={getattr(canal, 'id', '?')} Error] {e}")
                 continue
 
-        excepciones_guild = {row[0] for row in listar_excepciones(interaction.guild.id)}
+        excepciones_guild = {row[0] for row in await listar_excepciones(interaction.guild.id)}
         fantasmas_ids = [mid for mid, count in actividad.items() if count == 0 and mid not in excepciones_guild]
         saltados_por_excepcion = [mid for mid, count in actividad.items() if count == 0 and mid in excepciones_guild]
-        ULTIMOS_FANTASMAS[interaction.guild.id] = fantasmas_ids
+        await db.save_purge_scan(interaction.guild.id, fantasmas_ids)
 
         pie = f"\n📡 Canales/hilos escaneados: {canales_escaneados}"
         if saltados_por_excepcion:
@@ -107,12 +108,13 @@ class PurgaCog(commands.Cog):
     @is_staff()
     async def purgaafk(self, interaction: discord.Interaction):
         guild_id = interaction.guild.id
-        if guild_id not in ULTIMOS_FANTASMAS or not ULTIMOS_FANTASMAS[guild_id]:
+        fantasmas_ids = await db.get_purge_scan(guild_id)
+        if not fantasmas_ids:
             return await interaction.response.send_message("Primero ejecuta un `/scan`, por favor 🔍", ephemeral=True)
         await interaction.response.defer()
         pateados = 0; protegidos = 0
-        for user_id in ULTIMOS_FANTASMAS[guild_id]:
-            if es_excepcion(guild_id, user_id):
+        for user_id in fantasmas_ids:
+            if await es_excepcion(guild_id, user_id):
                 protegidos += 1; continue  # doble chequeo por si lo agregaron a excepciones después del /scan
             user = interaction.guild.get_member(user_id)
             if user and not user.bot:
@@ -121,7 +123,7 @@ class PurgaCog(commands.Cog):
         msg = f"Purga terminada: {pateados} expulsado(s) ✅"
         if protegidos: msg += f" | {protegidos} protegido(s) por excepción 🛡️"
         await interaction.followup.send(msg)
-        ULTIMOS_FANTASMAS[guild_id] = []
+        await db.save_purge_scan(guild_id, [])
 
     grupo_excepciones = app_commands.Group(name="purgaexc", description="[Staff] Excepciones de la purga AFK")
 
@@ -129,7 +131,7 @@ class PurgaCog(commands.Cog):
     @app_commands.describe(user="Usuario que avisó que estará inactivo", razon="Motivo/razón (opcional)")
     @is_staff()
     async def purgaexc_add(self, interaction: discord.Interaction, user: discord.Member, razon: str = "Avisó inactividad temporal"):
-        agregar_excepcion(interaction.guild.id, user.id, razon, interaction.user.id)
+        await agregar_excepcion(interaction.guild.id, user.id, razon, interaction.user.id)
         await interaction.response.send_message(
             f"{user.mention} fue añadido a la lista de excepciones de purga. No será expulsado por AFK aunque el `/scan` lo marque inactivo 🛡️\nRazón: {razon}"
         )
@@ -138,7 +140,7 @@ class PurgaCog(commands.Cog):
     @app_commands.describe(user="Usuario a quitar de excepciones")
     @is_staff()
     async def purgaexc_quitar(self, interaction: discord.Interaction, user: discord.Member):
-        if quitar_excepcion(interaction.guild.id, user.id):
+        if await quitar_excepcion(interaction.guild.id, user.id):
             await interaction.response.send_message(f"{user.mention} fue quitado de la lista de excepciones 🗑️")
         else:
             await interaction.response.send_message(f"{user.mention} no estaba en la lista de excepciones 🤷", ephemeral=True)
@@ -147,7 +149,7 @@ class PurgaCog(commands.Cog):
     @is_staff()
     async def purgaexc_lista(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        filas = listar_excepciones(interaction.guild.id)
+        filas = await listar_excepciones(interaction.guild.id)
         if not filas:
             return await interaction.followup.send("No hay nadie en la lista de excepciones ahora mismo 🤷", ephemeral=True)
         embed = discord.Embed(title="Excepciones de Purga AFK 🛡️", color=0x2ECC71)
@@ -156,6 +158,7 @@ class PurgaCog(commands.Cog):
             nombre = miembro.mention if miembro else f"ID:{user_id}"
             mod = interaction.guild.get_member(added_by)
             mod_nombre = mod.display_name if mod else f"ID:{added_by}"
-            embed.add_field(name=nombre, value=f"**Razón:** {razon}\n**Añadido por:** {mod_nombre}\n**Fecha:** {ts[:10]}", inline=False)
+            fecha = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10]
+            embed.add_field(name=nombre, value=f"**Razón:** {razon}\n**Añadido por:** {mod_nombre}\n**Fecha:** {fecha}", inline=False)
         embed.set_footer(text=f"Total: {len(filas)} excepción(es)")
         await interaction.followup.send(embed=embed, ephemeral=True)

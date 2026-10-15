@@ -17,6 +17,7 @@ class HelpCog(commands.Cog):
         # Públicos
         embed.add_field(name="🤖 IA", value="`@Abo <mensaje>` — Háblale a Abo con IA", inline=False)
         embed.add_field(name="🎨 Color", value="`/color` — Elige tu color de nombre (incluye Booster Colors si aplica)", inline=False)
+        embed.add_field(name="🎫 Soporte", value="Usa el botón del panel de tickets para abrir una conversación privada con el staff.", inline=False)
         if es_staff:
             embed.add_field(name="⚠️ Warns 🔒", value=(
                 "`/warn <user> [razón]` — Warnea a un usuario (auto-mute en 3, auto-ban en 5)\n"
@@ -50,6 +51,16 @@ class HelpCog(commands.Cog):
                 "El botón **Booster Colors** dentro de `/color` es exclusivo para Server Boosters\n"
                 "*(Abo crea los 5 roles automáticamente con `/create_booster_colors`)*"
             ), inline=False)
+            embed.add_field(name="🎫 Tickets 🔒", value=(
+                "`/ticket_config <categoria> <rol_staff> <canal_registros>` — Configura tickets y transcripciones\n"
+                "`/ticket_panel <canal>` — Publica el panel persistente para abrir tickets\n"
+                "`/ticket_transcript <canal>` — Descarga la copia guardada en Neon (solo quien abrió o staff)"
+            ), inline=False)
+            embed.add_field(name="👋 Bienvenidas y despedidas 🔒", value=(
+                "`/welcome_config <canal> <texto> [imagen_url]` y `/leave_config <canal> <texto> [imagen_url]`\n"
+                "Variables disponibles: `{user}`, `{username}`, `{server}`, `{member_count}`\n"
+                "`/welcome_off` y `/leave_off` — Desactiva cada mensaje"
+            ), inline=False)
             if interaction.user.id == TU_ID:
                 embed.add_field(name="☢️ Reset Servidor 🔒 (solo owner)", value=(
                     "`/reset_servidor` — Borra TODOS los canales y roles, con backup JSON previo y confirmación por nombre"
@@ -57,5 +68,3 @@ class HelpCog(commands.Cog):
 
         embed.set_footer(text="Abo Bot • Prefix: slash /")
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
