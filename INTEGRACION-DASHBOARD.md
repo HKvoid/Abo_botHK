@@ -1,0 +1,10 @@
+# Enlace con Abo Dashboard
+
+Este proyecto es el bot de Discord. El dashboard es un proyecto separado y se enlaza sin importar código del bot:
+
+- Ambos usan exactamente el mismo `DATABASE_URL` de Neon.
+- El dashboard usa `dashboard_schema.sql`, que replica el esquema de `database.py`.
+- Configura `DASHBOARD_SECRET` solamente en el proyecto del dashboard.
+- El dashboard lee y escribe `guild_settings`, `warns`, `tickets`, `purge_exceptions`, `color_roles` y `memory`, las mismas tablas que usa este bot.
+
+Despliega este proyecto como worker ejecutando `python bot.py` y el dashboard como servicio web separado.
