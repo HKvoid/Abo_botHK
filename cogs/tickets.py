@@ -181,6 +181,15 @@ class TicketPanelView(discord.ui.View):
         await interaction.response.send_modal(TicketCreateModal())
 
 
+def _panel_style(value: str) -> discord.ButtonStyle:
+    return {
+        "secondary": discord.ButtonStyle.secondary,  # oscuro/gris
+        "success": discord.ButtonStyle.success,      # verde vivo
+        "danger": discord.ButtonStyle.danger,        # rojo vivo
+        "primary": discord.ButtonStyle.primary,      # azul
+    }.get(value, discord.ButtonStyle.secondary)
+
+
 def _panel_buttons(raw: str) -> list[dict[str, str]]:
     try:
         buttons = json.loads(raw or "[]")
@@ -192,7 +201,9 @@ def _panel_buttons(raw: str) -> list[dict[str, str]]:
             continue
         label = str(item.get("label", "")).strip()[:40]
         if label:
-            result.append({"emoji": str(item.get("emoji", "🎫"))[:8] or "🎫", "label": label})
+            style = str(item.get("style", "secondary"))
+            if style not in {"secondary", "success", "danger", "primary"}: style = "secondary"
+            result.append({"emoji": str(item.get("emoji", "🎫"))[:8] or "🎫", "label": label, "style": style})
     return result[:10] or [{"emoji": "🎫", "label": "Crear ticket"}]
 
 
@@ -203,7 +214,7 @@ class ConfiguredTicketPanelView(discord.ui.View):
         for index, item in enumerate(buttons):
             button = discord.ui.Button(
                 label=item["label"], emoji=item["emoji"],
-                style=discord.ButtonStyle.primary,
+                style=_panel_style(item.get("style", "secondary")),
                 custom_id=f"abo:ticket:panel:{panel_id}:button:{index}",
             )
             button.callback = self._open_modal(item["label"])
@@ -249,6 +260,23 @@ class TicketControlView(discord.ui.View):
             "UPDATE tickets SET claimed_by = $1 WHERE channel_id = $2 AND status = 'open'",
             interaction.user.id, interaction.channel_id,
         )
+        if isinstance(interaction.channel, discord.TextChannel):
+            settings = await db.get_settings(interaction.guild.id)
+            staff_role_id = settings.get("ticket_staff_role_id")
+            staff_role = interaction.guild.get_role(int(staff_role_id)) if staff_role_id else None
+            try:
+                if staff_role:
+                    await interaction.channel.set_permissions(
+                        staff_role, view_channel=False, send_messages=False,
+                        reason="Ticket reclamado: acceso exclusivo para creador y responsable",
+                    )
+                await interaction.channel.set_permissions(
+                    interaction.user, view_channel=True, send_messages=True,
+                    read_message_history=True, manage_messages=True,
+                    reason="Ticket reclamado por este miembro del staff",
+                )
+            except (discord.Forbidden, discord.HTTPException) as error:
+                log.warning("No se pudo restringir el ticket %s al reclamarlo: %s", interaction.channel_id, error)
         await interaction.response.send_message(
             f"{interaction.user.mention} se hará cargo de este ticket.",
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
@@ -319,9 +347,9 @@ class TicketControlView(discord.ui.View):
             ephemeral=True,
         )
         try:
-            await channel.send(f"Ticket cerrado por {interaction.user.mention}.", view=TicketControlView())
-        except discord.HTTPException:
-            pass
+            await channel.delete(reason=f"Ticket #{ticket['id']} cerrado: eliminación automática")
+        except (discord.Forbidden, discord.HTTPException) as error:
+            log.warning("No se pudo eliminar el canal del ticket %s: %s", ticket["id"], error)
 
 
 class TicketCog(commands.Cog):
@@ -383,7 +411,7 @@ class TicketCog(commands.Cog):
             except ValueError:
                 panel_id = 0
             selected = await db.fetchrow(
-                "SELECT id, name, title, description, buttons FROM ticket_panels WHERE id=$1 AND guild_id=$2",
+                "SELECT id, name, title, description, image_url, buttons FROM ticket_panels WHERE id=$1 AND guild_id=$2",
                 panel_id, interaction.guild_id,
             )
             if not selected:
@@ -392,10 +420,12 @@ class TicketCog(commands.Cog):
         if selected:
             title = selected["title"]
             description = selected["description"]
+            image_url = selected["image_url"] or ""
             buttons = _panel_buttons(selected["buttons"])
             view = ConfiguredTicketPanelView(selected["id"], buttons)
         else:
             title = settings.get("ticket_panel_title") or "Centro de soporte 🎫"
+            image_url = settings.get("ticket_panel_image_url") or ""
             description = settings.get("ticket_panel_description") or (
                 "Pulsa **Crear ticket** para abrir una conversación privada con el staff. "
                 "Describe el asunto y los detalles en el formulario."
@@ -403,6 +433,8 @@ class TicketCog(commands.Cog):
             view = TicketPanelView()
 
         embed = discord.Embed(title=title[:256], description=description[:4096], color=0x5865F2)
+        if image_url.startswith(("http://", "https://")):
+            embed.set_image(url=image_url[:1000])
         embed.set_footer(text=f"{interaction.guild.name} · Soporte")
         message = await canal.send(embed=embed, view=view)
         if selected:
