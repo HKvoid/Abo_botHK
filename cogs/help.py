@@ -18,6 +18,15 @@ class HelpCog(commands.Cog):
         embed.add_field(name="🤖 IA", value="`@Abo <mensaje>` — Háblale a Abo con IA", inline=False)
         embed.add_field(name="🎨 Color", value="`/color` — Elige tu color de nombre (incluye Booster Colors si aplica)", inline=False)
         embed.add_field(name="🎫 Soporte", value="Usa el botón del panel de tickets para abrir una conversación privada con el staff.", inline=False)
+        embed.add_field(name="🎴 Abo Cards", value=(
+            "`/sobre` — Abre un sobre de 3 cartas\n"
+            "`/coleccion [usuario]` — Consulta un álbum\n"
+            "`/carta <nombre>` — Mira una carta e imagen\n"
+            "`/diario_cartas` y `/saldo_cartas` — Economía\n"
+            "`/intercambiar_carta` — Intercambia con otro miembro\n"
+            "`/mercado` — Compra, publica o retira cartas\n"
+            "`/ranking_cartas` — Ranking por valor de colección"
+        ), inline=False)
         if es_staff:
             embed.add_field(name="⚠️ Warns 🔒", value=(
                 "`/warn <user> [razón]` — Warnea a un usuario (auto-mute en 3, auto-ban en 5)\n"
