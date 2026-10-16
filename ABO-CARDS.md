@@ -30,3 +30,7 @@ El catálogo inicial usa las imágenes proporcionadas en `assets/cards/`, con 17
 - Las publicaciones del mercado retiran las copias del inventario hasta que se venden o cancelan.
 - Las cartas y monedas están separadas por `guild_id`.
 - El sistema todavía no incluye batallas, efectos competitivos ni cartas de usuarios reales; eso queda para una fase posterior.
+
+## Assets finales
+
+El catálogo fue actualizado con `Cartas.zip`: las 14 cartas numeradas usan las imágenes PNG finales de alta resolución, y Abojama, Abosaurio y Abomaid usan sus versiones JPG completas. Se conservaron los mismos slugs, por lo que los inventarios y publicaciones existentes siguen apuntando a las mismas cartas.
