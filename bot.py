@@ -19,6 +19,7 @@ from cogs.reset import ResetCog
 from cogs.help import HelpCog
 from cogs.tickets import TicketCog, TicketPanelView, TicketControlView, load_configured_ticket_views
 from cogs.greetings import GreetingsCog
+from cogs.cards import CardsCog, ensure_card_catalog
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -28,6 +29,7 @@ intents.members = True
 class AboBot(commands.Bot):
     async def setup_hook(self):
         await db.connect()
+        await ensure_card_catalog()
         log.info("Conexión persistente a Neon inicializada")
         # La vista persistente se registra una vez al iniciar, incluso tras reinicios.
         self.add_view(ColorMenuView())
@@ -35,7 +37,7 @@ class AboBot(commands.Bot):
         self.add_view(TicketControlView())
         await load_configured_ticket_views(self)
         cogs = (
-            ColorsCog, StaffColorsCog, BoosterColorsCog, ModCog,
+            ColorsCog, StaffColorsCog, BoosterColorsCog, CardsCog, ModCog,
             PurgaCog, WarnsCog, TicketCog, GreetingsCog, HelpCog, ResetCog,
         )
         for cog_class in cogs:
