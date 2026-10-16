@@ -1,36 +1,7 @@
-# Abo Cards
 
-## Fase 1: colección
 
-- `/sobre`: compra un sobre de 3 cartas por 100 Abo Coins.
-- `/coleccion [usuario]`: muestra el álbum y su valor base.
-- `/carta <nombre>`: muestra rareza, valor, copias e imagen de la carta.
-- `/diario_cartas`: reclama monedas diarias con racha.
-- `/saldo_cartas`: consulta el saldo.
+## Emojis personalizados y catálogo administrable
 
-Cada usuario empieza con 500 Abo Coins al usar el sistema por primera vez. Las cartas se guardan por servidor, así que cada comunidad tiene su propia colección.
+Las 17 cartas iniciales tienen asociados los nombres e IDs de emojis personalizados del servidor. Abo los muestra en `/coleccion`, `/sobre`, `/carta`, intercambios y mercado; si una carta no tiene emoji configurado usa un emoji de respaldo según su rareza.
 
-## Fase 2: economía social
-
-- `/intercambiar_carta`: intercambio directo de dos cartas entre dos miembros.
-- `/mercado_publicar`: publica copias a un precio por unidad.
-- `/mercado`: consulta publicaciones activas.
-- `/mercado_comprar`: compra una publicación.
-- `/mercado_cancelar`: retira una publicación propia y recupera las copias restantes.
-- `/ranking_cartas`: ranking por valor base de colección.
-
-## Catálogo inicial
-
-El catálogo inicial usa las imágenes proporcionadas en `assets/cards/`, con 17 cartas entre comunes, raras, épicas y legendarias. El catálogo se sincroniza automáticamente en Neon cada vez que inicia Abo.
-
-## Economía y seguridad
-
-- Las operaciones de sobres, intercambio y mercado usan transacciones PostgreSQL.
-- Las cantidades se bloquean antes de transferirse para evitar duplicaciones por acciones simultáneas.
-- Las publicaciones del mercado retiran las copias del inventario hasta que se venden o cancelan.
-- Las cartas y monedas están separadas por `guild_id`.
-- El sistema todavía no incluye batallas, efectos competitivos ni cartas de usuarios reales; eso queda para una fase posterior.
-
-## Assets finales
-
-El catálogo fue actualizado con `Cartas.zip`: las 14 cartas numeradas usan las imágenes PNG finales de alta resolución, y Abojama, Abosaurio y Abomaid usan sus versiones JPG completas. Se conservaron los mismos slugs, por lo que los inventarios y publicaciones existentes siguen apuntando a las mismas cartas.
+Desde la sección **🎴 Cartas** del dashboard se pueden crear, editar y archivar cartas. Una carta nueva guarda en Neon su slug, nombre, rareza, peso de aparición, valor base, nombre/ID del emoji e imagen binaria. El bot consulta primero la imagen guardada en Neon y después intenta usar un asset local para las cartas incluidas en el paquete.
