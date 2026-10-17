@@ -16,6 +16,18 @@ from core import db
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "cards"
 PACK_PRICE = 100
 DAILY_BASE = 250
+PITY_RARE_LIMIT = 5
+PITY_EPIC_LIMIT = 15
+XP_PER_PACK = 100
+XP_PER_DAILY = 50
+
+DEFAULT_CARD_MESSAGES = {
+    "pack_opened": ("¡Sobre abierto! 🎴", "{cards}\n\nSaldo restante: **{balance} Abo Coins**", 0x5865F2),
+    "level_up": ("¡Subiste de nivel! ✨", "Ahora eres nivel **{level}** y tienes **{xp} XP**.", 0x57F287),
+    "pity_rare": ("Protección de suerte 🔵", "Tu próximo sobre garantiza al menos una carta **Rara**.", 0x3498DB),
+    "pity_epic": ("Protección de suerte 🟣", "Tu próximo sobre garantiza al menos una carta **Épica**.", 0x9B59B6),
+    "set_complete": ("¡Set completado! 🏆", "Completaste **{set_name}** y recibiste **{reward} Abo Coins**.", 0xF1C40F),
+}
 
 RARITY_META = {
     "Común": (0x95A5A6, 100),
@@ -257,10 +269,107 @@ async def choose_cards(connection, amount: int = 3) -> list[str]:
     return random.choices(population, weights=weights, k=amount)
 
 
+def level_for_xp(xp: int) -> int:
+    return max(1, int(xp // 1000) + 1)
+
+
+async def card_message(guild_id: int, key: str, **values) -> discord.Embed:
+    default = DEFAULT_CARD_MESSAGES.get(key, ("Abo Cards", "", 0x5865F2))
+    row = await db.fetchrow("SELECT title,description,color FROM card_message_templates WHERE guild_id=$1 AND message_key=$2", guild_id, key)
+    title, description, color = (row["title"], row["description"], row["color"]) if row else default
+    try:
+        title, description = title.format(**values), description.format(**values)
+    except KeyError:
+        pass
+    return notice(title, description, color)
+
+
+async def award_xp(guild_id: int, user_id: int, amount: int) -> tuple[int, bool]:
+    async with db._pool().acquire() as connection:
+        row = await connection.fetchrow("""INSERT INTO card_wallets (guild_id,user_id,xp,level) VALUES ($1,$2,$3,$4)
+            ON CONFLICT (guild_id,user_id) DO UPDATE SET xp=card_wallets.xp+$3,level=GREATEST(card_wallets.level,$4),updated_at=NOW()
+            RETURNING xp,level""", guild_id, user_id, amount, level_for_xp(amount))
+        new_level = level_for_xp(row["xp"])
+        if new_level != row["level"]:
+            await connection.execute("UPDATE card_wallets SET level=$1 WHERE guild_id=$2 AND user_id=$3", new_level, guild_id, user_id)
+        return new_level, new_level > row["level"]
+
+
+async def claim_set_reward(guild_id: int, user_id: int, set_slug: str):
+    status = await db.fetchrow("""SELECT COUNT(c.slug)::int AS total,COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned,
+        s.name,s.reward_coins FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE
+        LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE s.slug=$3 GROUP BY s.name,s.reward_coins""", guild_id, user_id, set_slug)
+    if not status or status["total"] == 0 or status["owned"] < status["total"]:
+        return None
+    inserted = await db.fetchval("INSERT INTO card_set_claims (guild_id,user_id,set_slug) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING set_slug", guild_id, user_id, set_slug)
+    if not inserted:
+        return None
+    reward = status["reward_coins"]
+    await ensure_wallet(guild_id, user_id)
+    await db.execute("UPDATE card_wallets SET coins=coins+$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", reward, guild_id, user_id)
+    await award_xp(guild_id, user_id, 500)
+    return status["name"], reward
+
+
+async def open_card_pack(guild_id: int, user_id: int):
+    await ensure_wallet(guild_id, user_id)
+    async with db._pool().acquire() as connection:
+        async with connection.transaction():
+            wallet = await connection.fetchrow("SELECT * FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", guild_id, user_id)
+            if wallet["coins"] < PACK_PRICE:
+                return None, f"El sobre cuesta **{PACK_PRICE} Abo Coins** y tienes **{wallet['coins']}**.", None
+            rare_pity = wallet["pity_rare"] + 1 >= PITY_RARE_LIMIT
+            epic_pity = wallet["pity_epic"] + 1 >= PITY_EPIC_LIMIT
+            drawn = await choose_cards(connection, 3)
+            if epic_pity:
+                guaranteed = await connection.fetch("SELECT slug FROM card_catalog WHERE active=TRUE AND rarity IN ('Épica','Legendaria')")
+                if guaranteed: drawn[0] = random.choice(guaranteed)["slug"]
+            elif rare_pity:
+                guaranteed = await connection.fetch("SELECT slug FROM card_catalog WHERE active=TRUE AND rarity IN ('Rara','Épica','Legendaria')")
+                if guaranteed: drawn[0] = random.choice(guaranteed)["slug"]
+            rows = await connection.fetch("SELECT slug,name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=ANY($1::text[])", drawn)
+            by_slug = {row["slug"]: row for row in rows}
+            has_rare = any(by_slug[s]["rarity"] in {"Rara", "Épica", "Legendaria"} for s in drawn)
+            has_epic = any(by_slug[s]["rarity"] in {"Épica", "Legendaria"} for s in drawn)
+            rare_count = 0 if has_rare else wallet["pity_rare"] + 1
+            epic_count = 0 if has_epic else wallet["pity_epic"] + 1
+            await connection.execute("UPDATE card_wallets SET coins=coins-$1,pity_rare=$2,pity_epic=$3,packs_opened=packs_opened+1,updated_at=NOW() WHERE guild_id=$4 AND user_id=$5", PACK_PRICE, rare_count, epic_count, guild_id, user_id)
+            for slug in drawn:
+                await add_card(connection, guild_id, user_id, slug)
+            balance = wallet["coins"] - PACK_PRICE
+    level, leveled = await award_xp(guild_id, user_id, XP_PER_PACK)
+    return {"drawn": drawn, "rows": by_slug, "balance": balance, "rare_pity": rare_count, "epic_pity": epic_count, "level": level, "leveled": leveled, "forced": "epic" if epic_pity else "rare" if rare_pity else ""}, None, None
+
+
 class CardsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.trade_sessions: dict[int, dict] = {}
+
+    async def restore_trade_sessions(self):
+        rows = await db.fetch("SELECT * FROM card_trade_sessions WHERE status='active' AND channel_id IS NOT NULL")
+        for row in rows:
+            guild = self.bot.get_guild(row["guild_id"])
+            channel = guild.get_channel(row["channel_id"]) if guild else None
+            if not channel:
+                continue
+            members = [guild.get_member(row["user_a"]) if guild else None, guild.get_member(row["user_b"]) if guild else None]
+            users = [row["user_a"], row["user_b"]]
+            offers = {users[0]: {}, users[1]: {}}
+            for index, key in enumerate(("offer_a", "offer_b")):
+                payload = row[key] or {}
+                for slug, quantity in payload.items():
+                    card = await card_row(slug)
+                    if card:
+                        offers[users[index]][slug] = {"quantity": int(quantity), "name": card["name"], "emoji": card_emoji(card)}
+            self.trade_sessions[row["channel_id"]] = {
+                "trade_id": row["id"], "guild_id": row["guild_id"], "channel_id": row["channel_id"],
+                "user_a": users[0], "user_b": users[1],
+                "name_a": members[0].display_name if members[0] else str(users[0]),
+                "name_b": members[1].display_name if members[1] else str(users[1]),
+                "offers": offers,
+                "confirmed": {users[0]: row["confirmed_a"], users[1]: row["confirmed_b"]},
+            }
 
     @app_commands.command(name="diario_cartas", description="Reclama tus Abo Coins diarios para comprar sobres")
     @app_commands.guild_only()
@@ -289,6 +398,9 @@ class CardsCog(commands.Cog):
         await interaction.response.send_message(
             embed=notice("Recompensa diaria ✨", f"Recibiste **{coins_text(reward)} Abo Coins**.\nRacha: **{streak} días**\nSaldo: **{coins_text(balance)}**", 0x57F287), ephemeral=True,
         )
+        level, leveled = await award_xp(interaction.guild_id, interaction.user.id, XP_PER_DAILY)
+        if leveled:
+            await interaction.followup.send(embed=await card_message(interaction.guild_id, "level_up", level=level, xp=level * 1000), ephemeral=True)
 
     @app_commands.command(name="saldo_cartas", description="Muestra tu saldo de Abo Coins")
     @app_commands.guild_only()
@@ -297,24 +409,82 @@ class CardsCog(commands.Cog):
         coins = await db.fetchval("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", interaction.guild_id, interaction.user.id)
         await interaction.response.send_message(embed=notice("Tu saldo 💰", f"Tienes **{coins_text(coins)} Abo Coins**.\nUsa `/sobre` para comprar un sobre de 3 cartas."), ephemeral=True)
 
+    @app_commands.command(name="perfil", description="Muestra tu perfil de coleccionista")
+    @app_commands.guild_only()
+    @app_commands.describe(usuario="Perfil de otro miembro")
+    async def perfil(self, interaction: discord.Interaction, usuario: discord.Member | None = None):
+        target = usuario or interaction.user
+        await ensure_wallet(interaction.guild_id, target.id)
+        wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets WHERE guild_id=$1 AND user_id=$2", interaction.guild_id, target.id)
+        stats = await db.fetchrow("""SELECT COUNT(*) FILTER (WHERE quantity>0)::int AS unique_cards,
+            COALESCE(SUM(quantity),0)::int AS total_cards,COALESCE(SUM(quantity*c.base_value),0)::bigint AS value
+            FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.user_id=$2""", interaction.guild_id, target.id)
+        rank = await db.fetchval("""SELECT COUNT(*)+1 FROM (SELECT i.user_id,SUM(i.quantity*c.base_value) AS value FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 GROUP BY i.user_id) x WHERE x.value > $2""", interaction.guild_id, stats["value"]) or 1
+        embed = notice(f"Perfil de {target.display_name} 🪪", f"Nivel: **{wallet['level']}** · XP: **{wallet['xp']}/ {(wallet['level'])*1000}**\nSaldo: **{coins_text(wallet['coins'])} Abo Coins**\n\nCartas únicas: **{stats['unique_cards']}**\nCartas totales: **{stats['total_cards']}**\nValor de colección: **{coins_text(stats['value'])}**\nPosición: **#{rank}**\n\nSobres abiertos: **{wallet['packs_opened']}**\nPity rara: **{wallet['pity_rare']}/{PITY_RARE_LIMIT}**\nPity épica: **{wallet['pity_epic']}/{PITY_EPIC_LIMIT}**", 0x5865F2)
+        if target.display_avatar: embed.set_thumbnail(url=target.display_avatar.url)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="cartas_regalar", description="Regala cartas a un miembro")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def cartas_regalar(self, interaction: discord.Interaction, usuario: discord.Member, carta: str, cantidad: int = 1):
+        row = await card_row(carta)
+        if not row or cantidad < 1:
+            return await interaction.response.send_message(embed=notice("Datos inválidos", "Indica una carta válida y una cantidad positiva.", 0xED4245), ephemeral=True)
+        async with db._pool().acquire() as connection:
+            await add_card(connection, interaction.guild_id, usuario.id, row["slug"], cantidad)
+            await connection.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id,card_slug,quantity) VALUES ($1,$2,'grant',$3,$4,$5)", interaction.guild_id, interaction.user.id, usuario.id, row["slug"], cantidad)
+        await interaction.response.send_message(embed=notice("Cartas entregadas 🎁", f"Entregaste **×{cantidad} {card_emoji(row)} {row['name']}** a {usuario.mention}."), ephemeral=True)
+
+    @app_commands.command(name="cartas_retirar", description="Retira cartas de un miembro")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def cartas_retirar(self, interaction: discord.Interaction, usuario: discord.Member, carta: str, cantidad: int = 1):
+        row = await card_row(carta)
+        if not row or cantidad < 1:
+            return await interaction.response.send_message(embed=notice("Datos inválidos", "Indica una carta válida y una cantidad positiva.", 0xED4245), ephemeral=True)
+        async with db._pool().acquire() as connection:
+            result = await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4 AND quantity >= $1", cantidad, interaction.guild_id, usuario.id, row["slug"])
+            if result.endswith("0"):
+                return await interaction.response.send_message(embed=notice("No se pudo retirar", "El usuario no tiene suficientes copias.", 0xED4245), ephemeral=True)
+            await connection.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id,card_slug,quantity) VALUES ($1,$2,'remove',$3,$4,$5)", interaction.guild_id, interaction.user.id, usuario.id, row["slug"], cantidad)
+        await interaction.response.send_message(embed=notice("Cartas retiradas 🧹", f"Retiraste **×{cantidad} {card_emoji(row)} {row['name']}** de {usuario.mention}."), ephemeral=True)
+
+    @app_commands.command(name="cartas_saldo", description="Establece el saldo de Abo Coins de un miembro")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def cartas_saldo(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
+        if cantidad < 0:
+            return await interaction.response.send_message(embed=notice("Saldo inválido", "La cantidad no puede ser negativa.", 0xED4245), ephemeral=True)
+        await ensure_wallet(interaction.guild_id, usuario.id)
+        await db.execute("UPDATE card_wallets SET coins=$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", cantidad, interaction.guild_id, usuario.id)
+        await db.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id,coins) VALUES ($1,$2,'set_balance',$3,$4)", interaction.guild_id, interaction.user.id, usuario.id, cantidad)
+        await interaction.response.send_message(embed=notice("Saldo actualizado 💰", f"El saldo de {usuario.mention} ahora es **{coins_text(cantidad)} Abo Coins**."), ephemeral=True)
+
+    @app_commands.command(name="cartas_resetear", description="Reinicia la colección y economía de un miembro")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def cartas_resetear(self, interaction: discord.Interaction, usuario: discord.Member):
+        async with db._pool().acquire() as connection:
+            await connection.execute("DELETE FROM card_inventory WHERE guild_id=$1 AND user_id=$2", interaction.guild_id, usuario.id)
+            await connection.execute("UPDATE card_wallets SET coins=500,xp=0,level=1,pity_rare=0,pity_epic=0,packs_opened=0,daily_claimed_at=NULL,daily_streak=0,updated_at=NOW() WHERE guild_id=$1 AND user_id=$2", interaction.guild_id, usuario.id)
+            await connection.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id) VALUES ($1,$2,'reset',$3)", interaction.guild_id, interaction.user.id, usuario.id)
+        await interaction.response.send_message(embed=notice("Colección reiniciada ⚠️", f"Se reinició la colección y economía de {usuario.mention}.", 0xFEE75C), ephemeral=True)
+
     @app_commands.command(name="sobre", description="Compra un sobre de 3 cartas aleatorias")
     @app_commands.guild_only()
     async def sobre(self, interaction: discord.Interaction):
-        await ensure_wallet(interaction.guild_id, interaction.user.id)
-        async with db._pool().acquire() as connection:
-            async with connection.transaction():
-                wallet = await connection.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", interaction.guild_id, interaction.user.id)
-                if wallet["coins"] < PACK_PRICE:
-                    return await interaction.response.send_message(embed=notice("No alcanzan las monedas 💸", f"El sobre cuesta **{PACK_PRICE} Abo Coins** y tienes **{wallet['coins']}**.", 0xED4245), ephemeral=True)
-                drawn = await choose_cards(connection, 3)
-                await connection.execute("UPDATE card_wallets SET coins=coins-$1, updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", PACK_PRICE, interaction.guild_id, interaction.user.id)
-                for slug in drawn:
-                    await add_card(connection, interaction.guild_id, interaction.user.id, slug)
-                rows = await connection.fetch("SELECT slug,name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=ANY($1::text[])", drawn)
-                by_slug = {row["slug"]: row for row in rows}
-                balance = wallet["coins"] - PACK_PRICE
-        lines = [f"{card_emoji(by_slug[s])} {by_slug[s]['rarity']} · **{by_slug[s]['name']}**" for s in drawn]
-        await interaction.response.send_message(embed=notice("¡Sobre abierto! 🎴", "\n".join(f"• {line}" for line in lines) + f"\n\nSaldo restante: **{coins_text(balance)} Abo Coins**"), ephemeral=True)
+        result, error, _ = await open_card_pack(interaction.guild_id, interaction.user.id)
+        if error:
+            return await interaction.response.send_message(embed=notice("No alcanzan las monedas 💸", error, 0xED4245), ephemeral=True)
+        lines = [f"{card_emoji(result['rows'][s])} {result['rows'][s]['rarity']} · **{result['rows'][s]['name']}**" for s in result["drawn"]]
+        embed = await card_message(interaction.guild_id, "pack_opened", cards="\n".join(f"• {line}" for line in lines), balance=coins_text(result["balance"]))
+        if result["forced"]:
+            pity = await card_message(interaction.guild_id, "pity_epic" if result["forced"] == "epic" else "pity_rare")
+            embed.add_field(name=pity.title, value=pity.description, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if result["leveled"]:
+            await interaction.followup.send(embed=await card_message(interaction.guild_id, "level_up", level=result["level"], xp=result["level"] * 1000), ephemeral=True)
 
     @app_commands.command(name="coleccion", description="Muestra tu colección paginada")
     @app_commands.guild_only()
@@ -351,6 +521,9 @@ class CardsCog(commands.Cog):
         owned = sum(1 for c in cards if c["quantity"] > 0)
         embed = notice(f"{row['name']} 🗂️", f"{row['description']}\n\nProgreso: **{owned}/{len(cards)}**\n\n{description}")
         await interaction.response.send_message(embed=embed)
+        reward = await claim_set_reward(interaction.guild_id, interaction.user.id, row["slug"])
+        if reward:
+            await interaction.followup.send(embed=await card_message(interaction.guild_id, "set_complete", set_name=reward[0], reward=coins_text(reward[1])), ephemeral=True)
 
     @app_commands.command(name="carta", description="Muestra los detalles de una carta")
     @app_commands.guild_only()
@@ -395,6 +568,8 @@ class CardsCog(commands.Cog):
             "offers": {interaction.user.id: {}, usuario.id: {}},
             "confirmed": {interaction.user.id: False, usuario.id: False},
         }
+        session["trade_id"] = await db.fetchval("""INSERT INTO card_trade_sessions (guild_id,user_a,user_b,channel_id,offer_a,offer_b,status)
+            VALUES ($1,$2,$3,$4,'{}'::jsonb,'{}'::jsonb,'active') RETURNING id""", interaction.guild_id, interaction.user.id, usuario.id, interaction.channel_id)
         self.trade_sessions[interaction.channel_id] = session
         await interaction.response.send_message(
             embed=self._trade_embed(session, "Tradeo iniciado 🤝", "Escriban sus cartas en este canal. Ejemplo: `2 Mielabo, 1 Abo Pro` o `nada`."),
@@ -413,10 +588,10 @@ class CardsCog(commands.Cog):
         aliases = {
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
-            "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets",
+            "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets", "profile": "perfil",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "ayudacartas"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas"}
         if command not in quick:
             return False
         if command == "ayudacartas":
@@ -437,8 +612,41 @@ class CardsCog(commands.Cog):
                 "offers": {message.author.id: {}, target.id: {}},
                 "confirmed": {message.author.id: False, target.id: False},
             }
+            self.trade_sessions[message.channel.id]["trade_id"] = await db.fetchval("""INSERT INTO card_trade_sessions (guild_id,user_a,user_b,channel_id,offer_a,offer_b,status)
+                VALUES ($1,$2,$3,$4,'{}'::jsonb,'{}'::jsonb,'active') RETURNING id""", message.guild.id, message.author.id, target.id, message.channel.id)
             await message.channel.send(embed=self._trade_embed(self.trade_sessions[message.channel.id], "Tradeo iniciado 🤝", "Escriban sus cartas, por ejemplo `2 Mielabo, 1 Abo Pro`, o escriban `nada`. Después confirmen con `@Abo !confirmar`."), allowed_mentions=discord.AllowedMentions(users=True))
             return True
+        if command == "perfil":
+            target = message.mentions[0] if message.mentions else message.author
+            await ensure_wallet(message.guild.id, target.id)
+            wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets WHERE guild_id=$1 AND user_id=$2", message.guild.id, target.id)
+            stats = await db.fetchrow("SELECT COUNT(*) FILTER (WHERE quantity>0)::int AS unique_cards,COALESCE(SUM(quantity),0)::int AS total_cards,COALESCE(SUM(quantity*c.base_value),0)::bigint AS value FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.user_id=$2", message.guild.id, target.id)
+            embed = notice(f"Perfil de {target.display_name} 🪪", f"Nivel: **{wallet['level']}** · XP: **{wallet['xp']}/{wallet['level']*1000}**\nSaldo: **{coins_text(wallet['coins'])} Abo Coins**\n\nCartas únicas: **{stats['unique_cards']}**\nCartas totales: **{stats['total_cards']}**\nValor: **{coins_text(stats['value'])} Abo Coins**\nSobres abiertos: **{wallet['packs_opened']}**\nPity rara: **{wallet['pity_rare']}/{PITY_RARE_LIMIT}**\nPity épica: **{wallet['pity_epic']}/{PITY_EPIC_LIMIT}**")
+            await message.channel.send(embed=embed); return True
+        if command == "cartas":
+            if not message.author.guild_permissions.manage_guild:
+                await message.channel.send(embed=notice("Permiso requerido 🔒", "Necesitas gestionar el servidor para usar herramientas administrativas.", 0xED4245)); return True
+            args = argument.split()
+            sub = args[0].lower() if args else ""
+            target = message.mentions[0] if message.mentions else None
+            if sub in {"regalar", "retirar", "saldo", "resetear"} and not target:
+                await message.channel.send(embed=notice("Uso administrativo", "Ejemplo: `!cartas regalar @usuario Mielabo 2`.", 0xFEE75C)); return True
+            if sub == "resetear":
+                await db.execute("DELETE FROM card_inventory WHERE guild_id=$1 AND user_id=$2", message.guild.id, target.id)
+                await db.execute("UPDATE card_wallets SET coins=500,xp=0,level=1,pity_rare=0,pity_epic=0,packs_opened=0 WHERE guild_id=$1 AND user_id=$2", message.guild.id, target.id)
+                await message.channel.send(embed=notice("Colección reiniciada ⚠️", f"Se reinició la colección de {target.mention}.", 0xFEE75C)); return True
+            if sub == "saldo" and len(args) >= 3:
+                amount = int(args[-1]); await ensure_wallet(message.guild.id, target.id); await db.execute("UPDATE card_wallets SET coins=$1 WHERE guild_id=$2 AND user_id=$3", amount, message.guild.id, target.id)
+                await message.channel.send(embed=notice("Saldo actualizado 💰", f"Saldo de {target.mention}: **{coins_text(amount)}**.")); return True
+            if sub in {"regalar", "retirar"} and len(args) >= 3:
+                card_name = " ".join(args[2:-1]) if args[-1].isdigit() else " ".join(args[2:]); amount = int(args[-1]) if args[-1].isdigit() else 1; row = await card_row(card_name)
+                if not row: await message.channel.send(embed=notice("Carta no encontrada", "Indica una carta válida.", 0xED4245)); return True
+                async with db._pool().acquire() as connection:
+                    if sub == "regalar": await add_card(connection, message.guild.id, target.id, row["slug"], amount)
+                    else: await connection.execute("UPDATE card_inventory SET quantity=GREATEST(0,quantity-$1) WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", amount, message.guild.id, target.id, row["slug"])
+                    await connection.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id,card_slug,quantity) VALUES ($1,$2,$3,$4,$5,$6)", message.guild.id, message.author.id, "grant" if sub == "regalar" else "remove", target.id, row["slug"], amount)
+                await message.channel.send(embed=notice("Operación completada ✅", f"{sub.title()}: **×{amount} {card_emoji(row)} {row['name']}** a {target.mention}.")); return True
+            await message.channel.send(embed=notice("Herramientas de cartas", "`!cartas regalar @usuario <carta> [cantidad]` · `!cartas retirar @usuario <carta> [cantidad]` · `!cartas saldo @usuario <cantidad>` · `!cartas resetear @usuario")); return True
         if command in {"sets", "set"}:
             set_name = argument if command == "set" else ""
             if command == "sets":
@@ -450,7 +658,10 @@ class CardsCog(commands.Cog):
                 await message.channel.send(embed=notice("Set no encontrado", "Usa `!sets` para ver los sets disponibles.", 0xED4245)); return True
             cards = await db.fetch("SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity FROM card_catalog c LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name", message.guild.id, message.author.id, row["slug"])
             text = "\n".join(f"{'✅' if c['quantity'] else '❌'} {card_emoji(c)} **{c['name']}** · ×{c['quantity']}" for c in cards)
-            await message.channel.send(embed=notice(f"{row['name']} 🗂️", f"Progreso: **{sum(1 for c in cards if c['quantity']>0)}/{len(cards)}**\n\n{text}")); return True
+            await message.channel.send(embed=notice(f"{row['name']} 🗂️", f"Progreso: **{sum(1 for c in cards if c['quantity']>0)}/{len(cards)}**\n\n{text}"))
+            reward = await claim_set_reward(message.guild.id, message.author.id, row["slug"])
+            if reward: await message.channel.send(embed=await card_message(message.guild.id, "set_complete", set_name=reward[0], reward=coins_text(reward[1])))
+            return True
         if command == "saldo_cartas":
             await ensure_wallet(message.guild.id, message.author.id)
             coins = await db.fetchval("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", message.guild.id, message.author.id)
@@ -468,22 +679,22 @@ class CardsCog(commands.Cog):
                     streak = wallet["daily_streak"] + 1 if wallet["daily_claimed_at"] and (now.date() - wallet["daily_claimed_at"].date()) == timedelta(days=1) else 1
                     reward = min(DAILY_BASE + (streak - 1) * 25, 500)
                     await connection.execute("UPDATE card_wallets SET coins=coins+$1,daily_claimed_at=$2,daily_streak=$3,updated_at=NOW() WHERE guild_id=$4 AND user_id=$5", reward, now, streak, message.guild.id, message.author.id)
-            await message.channel.send(embed=notice("Recompensa diaria ✨", f"Recibiste **{coins_text(reward)} Abo Coins**. Racha: **{streak} días**." , 0x57F287)); return True
+            await message.channel.send(embed=notice("Recompensa diaria ✨", f"Recibiste **{coins_text(reward)} Abo Coins**. Racha: **{streak} días**." , 0x57F287))
+            level, leveled = await award_xp(message.guild.id, message.author.id, XP_PER_DAILY)
+            if leveled: await message.channel.send(embed=await card_message(message.guild.id, "level_up", level=level, xp=level * 1000))
+            return True
         if command == "sobre":
-            await ensure_wallet(message.guild.id, message.author.id)
-            async with db._pool().acquire() as connection:
-                async with connection.transaction():
-                    wallet = await connection.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", message.guild.id, message.author.id)
-                    if wallet["coins"] < PACK_PRICE:
-                        await message.channel.send(embed=notice("No alcanzan las monedas 💸", f"El sobre cuesta **{PACK_PRICE} Abo Coins** y tienes **{wallet['coins']}**.", 0xED4245)); return True
-                    drawn = await choose_cards(connection, 3)
-                    await connection.execute("UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", PACK_PRICE, message.guild.id, message.author.id)
-                    for slug in drawn: await add_card(connection, message.guild.id, message.author.id, slug)
-                    rows = await connection.fetch("SELECT slug,name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=ANY($1::text[])", drawn)
-                    by_slug = {row["slug"]: row for row in rows}
-                    balance = wallet["coins"] - PACK_PRICE
-            lines = [f"{card_emoji(by_slug[s])} {by_slug[s]['rarity']} · **{by_slug[s]['name']}**" for s in drawn]
-            await message.channel.send(embed=notice("¡Sobre abierto! 🎴", "\n".join(f"• {x}" for x in lines) + f"\n\nSaldo: **{coins_text(balance)} Abo Coins**")); return True
+            result, error, _ = await open_card_pack(message.guild.id, message.author.id)
+            if error:
+                await message.channel.send(embed=notice("No alcanzan las monedas 💸", error, 0xED4245)); return True
+            lines = [f"{card_emoji(result['rows'][s])} {result['rows'][s]['rarity']} · **{result['rows'][s]['name']}**" for s in result["drawn"]]
+            embed = await card_message(message.guild.id, "pack_opened", cards="\n".join(f"• {x}" for x in lines), balance=coins_text(result["balance"]))
+            if result["forced"]:
+                pity = await card_message(message.guild.id, "pity_epic" if result["forced"] == "epic" else "pity_rare")
+                embed.add_field(name=pity.title, value=pity.description, inline=False)
+            await message.channel.send(embed=embed)
+            if result["leveled"]: await message.channel.send(embed=await card_message(message.guild.id, "level_up", level=result["level"], xp=result["level"] * 1000))
+            return True
         if command == "coleccion":
             target = message.mentions[0] if message.mentions else message.author
             filter_name = re.sub(r"<@!?\d+>", "", argument).strip()
@@ -564,6 +775,8 @@ class CardsCog(commands.Cog):
         lowered = content.lower()
         if lowered in {"!cancelar", "!cancelado"}:
             self.trade_sessions.pop(message.channel.id, None)
+            if session.get("trade_id"):
+                await db.execute("UPDATE card_trade_sessions SET status='cancelled',completed_at=NOW() WHERE id=$1", session["trade_id"])
             await message.channel.send(embed=notice("Tradeo cancelado ❌", f"{message.author.mention} canceló el intercambio.", 0xED4245), allowed_mentions=discord.AllowedMentions(users=True))
             return True
         if lowered in {"!confirmar", "!confirmad", "!confirmado"}:
@@ -572,6 +785,9 @@ class CardsCog(commands.Cog):
                 # Nada es una oferta válida, pero se muestra qué debe hacer el usuario.
                 session["offers"][message.author.id] = {}
             session["confirmed"][message.author.id] = True
+            confirmation_column = "confirmed_a" if message.author.id == session["user_a"] else "confirmed_b"
+            if session.get("trade_id"):
+                await db.execute(f"UPDATE card_trade_sessions SET {confirmation_column}=TRUE WHERE id=$1", session["trade_id"])
             if all(session["confirmed"].values()):
                 result = await self._complete_trade(session)
                 if result:
@@ -579,6 +795,8 @@ class CardsCog(commands.Cog):
                     await message.channel.send(embed=result, allowed_mentions=discord.AllowedMentions(users=True))
                 else:
                     session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
+                    if session.get("trade_id"):
+                        await db.execute("UPDATE card_trade_sessions SET confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$1", session["trade_id"])
                     await message.channel.send(embed=notice("Tradeo detenido ⚠️", "Uno de los dos usuarios ya no tiene las cartas ofrecidas. Las confirmaciones se reiniciaron.", 0xFEE75C))
             else:
                 await message.channel.send(embed=self._trade_embed(session, "Confirmación recibida ✅", f"{message.author.mention} confirmó. Falta la confirmación del otro usuario."), allowed_mentions=discord.AllowedMentions(users=True))
@@ -590,6 +808,10 @@ class CardsCog(commands.Cog):
             return True
         session["offers"][message.author.id] = offer
         session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
+        if session.get("trade_id"):
+            offer_column = "offer_a" if message.author.id == session["user_a"] else "offer_b"
+            payload = {slug: data["quantity"] for slug, data in offer.items()}
+            await db.execute(f"UPDATE card_trade_sessions SET {offer_column}=$1::jsonb,confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$2", __import__("json").dumps(payload), session["trade_id"])
         await message.channel.send(embed=self._trade_embed(session, "Oferta actualizada 🎴", f"Oferta de {message.author.mention} guardada. Las confirmaciones se reiniciaron."), allowed_mentions=discord.AllowedMentions(users=True))
         return True
 
@@ -615,13 +837,13 @@ class CardsCog(commands.Cog):
                             data["quantity"], session["guild_id"], sender, slug,
                         )
                         await add_card(connection, session["guild_id"], receiver, slug, data["quantity"])
-                await connection.execute(
-                    """INSERT INTO card_trade_sessions (guild_id,user_a,user_b,offer_a,offer_b,status,completed_at)
-                       VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,'completed',NOW())""",
-                    session["guild_id"], session["user_a"], session["user_b"],
-                    __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_a"]].items()}),
-                    __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_b"]].items()}),
-                )
+                if session.get("trade_id"):
+                    await connection.execute("UPDATE card_trade_sessions SET status='completed',completed_at=NOW() WHERE id=$1", session["trade_id"])
+                else:
+                    await connection.execute("""INSERT INTO card_trade_sessions (guild_id,user_a,user_b,channel_id,offer_a,offer_b,status,completed_at)
+                       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,'completed',NOW())""", session["guild_id"], session["user_a"], session["user_b"], session.get("channel_id"), __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_a"]].items()}), __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_b"]].items()}))
+        await award_xp(session["guild_id"], session["user_a"], 100)
+        await award_xp(session["guild_id"], session["user_b"], 100)
         return notice("¡Tradeo completado! 🎉", f"{session['name_a']} y {session['name_b']} confirmaron el intercambio. Las cartas fueron transferidas correctamente.", 0x57F287)
 
     @app_commands.command(name="mercado_publicar", description="Publica copias de una carta en el mercado")

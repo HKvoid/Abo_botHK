@@ -26,6 +26,8 @@ class HelpCog(commands.Cog):
             "`/tradeo <usuario>` — Propón cartas, confirma mencionando a Abo con `!confirmar` o cancela con `!cancelar`\n"
             "Atajos rápidos: `!sobre`, `!coleccion [filtro]`, `!carta <nombre>`, `!saldo`, `!diario`, `!sets`, `!set <nombre>`, `!mercado`, `!ranking`, `!tradeo @usuario`\n"
             "`/sets` y `/set <nombre>` — Sets temáticos y progreso de colección\n"
+            "`/perfil [usuario]` — Nivel, XP, saldo, colección, ranking y pity\n"
+            "`/cartas_regalar`, `/cartas_retirar`, `/cartas_saldo`, `/cartas_resetear` — Herramientas de administración\n"
             "`/mercado` — Consulta el mercado y usa botones para comprar o ver al vendedor\n"
             "`/ranking_cartas` — Ranking por valor de colección"
         ), inline=False)
