@@ -94,6 +94,18 @@ def coins_text(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
+def character_stats_text(row) -> str:
+    stats = row.get("stats") or {}
+    if isinstance(stats, str):
+        try:
+            stats = __import__("json").loads(stats)
+        except Exception:
+            stats = {}
+    if not isinstance(stats, dict):
+        return ""
+    return "\n".join(f"**{str(key)[:80]}:** {str(value)[:300]}" for key, value in stats.items())
+
+
 async def ensure_card_catalog() -> None:
     rows = []
     for slug, name, rarity, image_file, weight, value in CATALOG:
@@ -111,6 +123,10 @@ async def ensure_card_catalog() -> None:
              emoji_name=EXCLUDED.emoji_name,emoji_id=EXCLUDED.emoji_id,active=TRUE""",
         __import__("json").dumps(rows),
     )
+    migrated = await db.fetchval("SELECT migration_key FROM schema_migrations WHERE migration_key='character_pixel_assets_v1'")
+    if not migrated:
+        await db.execute("UPDATE card_catalog SET image_data=NULL,image_mime=''" )
+        await db.execute("INSERT INTO schema_migrations (migration_key) VALUES ('character_pixel_assets_v1') ON CONFLICT DO NOTHING")
 
 
 def card_emoji(row) -> str:
@@ -533,7 +549,14 @@ class CardsCog(commands.Cog):
         if not row:
             return await interaction.response.send_message(embed=notice("Carta no encontrada", "Revisa el nombre en `/coleccion` o `/ranking_cartas`.", 0xED4245), ephemeral=True)
         owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"]) or 0
-        embed = notice(f"{card_emoji(row)} {row['name']}", f"Rareza: **{row['rarity']}**\nValor base: **{coins_text(row['base_value'])} Abo Coins**\nTu colección: **×{owned}**", rarity_color(row["rarity"]))
+        description = row.get("description") or "Conoce a este personaje de Abo."
+        stats = character_stats_text(row)
+        embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
+        embed.add_field(name="Rareza", value=row["rarity"], inline=True)
+        embed.add_field(name="Valor", value=f"{coins_text(row['base_value'])} Abo Coins", inline=True)
+        embed.add_field(name="Tu colección", value=f"×{owned}", inline=True)
+        if stats:
+            embed.add_field(name="Stats / características", value=stats[:1024], inline=False)
         path = ASSET_DIR / row["image_file"]
         if row.get("image_data"):
             filename = row["image_file"] or f"{row['slug']}.png"
@@ -709,7 +732,13 @@ class CardsCog(commands.Cog):
             if not row:
                 await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
             owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", message.guild.id, message.author.id, row["slug"]) or 0
-            embed = notice(f"{card_emoji(row)} {row['name']}", f"Rareza: **{row['rarity']}**\nValor: **{coins_text(row['base_value'])} Abo Coins**\nTu colección: **×{owned}**", rarity_color(row["rarity"]))
+            description = row.get("description") or "Conoce a este personaje de Abo."
+            stats = character_stats_text(row)
+            embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
+            embed.add_field(name="Rareza", value=row["rarity"], inline=True)
+            embed.add_field(name="Valor", value=f"{coins_text(row['base_value'])} Abo Coins", inline=True)
+            embed.add_field(name="Tu colección", value=f"×{owned}", inline=True)
+            if stats: embed.add_field(name="Stats / características", value=stats[:1024], inline=False)
             path = ASSET_DIR / row["image_file"]
             if row.get("image_data"):
                 filename = row["image_file"] or f"{row['slug']}.png"; embed.set_image(url=f"attachment://{filename}"); await message.channel.send(embed=embed, file=discord.File(io.BytesIO(bytes(row["image_data"])), filename=filename))
