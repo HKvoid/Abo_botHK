@@ -23,7 +23,8 @@ class HelpCog(commands.Cog):
             "`/coleccion [usuario]` — Consulta un álbum\n"
             "`/carta <nombre>` — Mira una carta e imagen\n"
             "`/diario_cartas` y `/saldo_cartas` — Economía\n"
-            "`/intercambiar_carta` — Intercambia con otro miembro\n"
+            "`/tradeo <usuario>` — Propón cartas, confirma mencionando a Abo con `!confirmar` o cancela con `!cancelar`\n"
+            "Atajos rápidos: `!sobre`, `!coleccion`, `!carta <nombre>`, `!saldo`, `!diario`, `!mercado`, `!ranking`, `!tradeo @usuario`\n"
             "`/mercado` — Compra, publica o retira cartas\n"
             "`/ranking_cartas` — Ranking por valor de colección"
         ), inline=False)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import random
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -137,6 +138,7 @@ async def choose_cards(connection, amount: int = 3) -> list[str]:
 class CardsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.trade_sessions: dict[int, dict] = {}
 
     @app_commands.command(name="diario_cartas", description="Reclama tus Abo Coins diarios para comprar sobres")
     @app_commands.guild_only()
@@ -235,28 +237,242 @@ class CardsCog(commands.Cog):
             return await interaction.response.send_message(embed=embed, file=file)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="intercambiar_carta", description="Intercambia cartas directamente con otro miembro")
+    @app_commands.command(name="tradeo", description="Inicia un intercambio de cartas con otro miembro")
     @app_commands.guild_only()
-    @app_commands.describe(usuario="Miembro receptor", ofrezco="Carta que entregas", cantidad_ofrezco="Cantidad que entregas", pido="Carta que recibes", cantidad_pido="Cantidad que recibes")
-    async def intercambiar_carta(self, interaction: discord.Interaction, usuario: discord.Member, ofrezco: str, cantidad_ofrezco: int, pido: str, cantidad_pido: int):
-        if usuario.bot or usuario.id == interaction.user.id or cantidad_ofrezco < 1 or cantidad_pido < 1:
-            return await interaction.response.send_message(embed=notice("Intercambio inválido", "Elige otro miembro y cantidades positivas.", 0xED4245), ephemeral=True)
-        offered = await card_row(ofrezco)
-        requested = await card_row(pido)
-        if not offered or not requested:
-            return await interaction.response.send_message(embed=notice("Carta no encontrada", "Usa el nombre exacto de la carta.", 0xED4245), ephemeral=True)
+    @app_commands.describe(usuario="Usuario con quien quieres hacer el tradeo")
+    async def tradeo(self, interaction: discord.Interaction, usuario: discord.Member):
+        if usuario.bot or usuario.id == interaction.user.id:
+            return await interaction.response.send_message(
+                embed=notice("Tradeo inválido", "Elige a otro miembro real del servidor.", 0xED4245), ephemeral=True,
+            )
+        if interaction.channel_id in self.trade_sessions:
+            return await interaction.response.send_message(
+                embed=notice("Ya hay un Tradeo activo", "Primero termina o cancela el tradeo actual en este canal.", 0xED4245), ephemeral=True,
+            )
+        session = {
+            "guild_id": interaction.guild_id,
+            "channel_id": interaction.channel_id,
+            "user_a": interaction.user.id,
+            "user_b": usuario.id,
+            "name_a": interaction.user.display_name,
+            "name_b": usuario.display_name,
+            "offers": {interaction.user.id: {}, usuario.id: {}},
+            "confirmed": {interaction.user.id: False, usuario.id: False},
+        }
+        self.trade_sessions[interaction.channel_id] = session
+        await interaction.response.send_message(
+            embed=self._trade_embed(session, "Tradeo iniciado 🤝", "Escriban sus cartas en este canal. Ejemplo: `2 Mielabo, 1 Abo Pro` o `nada`."),
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+
+    async def handle_card_prefix(self, message: discord.Message) -> bool:
+        """Accesos rápidos de entretenimiento; los comandos complejos siguen en slash."""
+        if not message.guild or not message.content.startswith("!"):
+            return False
+        parts = message.content[1:].strip().split(maxsplit=1)
+        if not parts:
+            return False
+        command = parts[0].lower()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        aliases = {
+            "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
+            "collection": "coleccion", "card": "carta", "pack": "sobre",
+            "market": "mercado", "ranking": "ranking_cartas",
+        }
+        command = aliases.get(command, command)
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "ayudacartas"}
+        if command not in quick:
+            return False
+        if command == "ayudacartas":
+            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario`\n\nPara publicar, comprar o cancelar en el mercado usa los comandos `/mercado_*` con autocompletado."))
+            return True
+        if command == "tradeo":
+            target = message.mentions[0] if message.mentions else None
+            if not target:
+                await message.channel.send(embed=notice("Uso de !tradeo", "Menciona al usuario: `!tradeo @usuario`.", 0xFEE75C))
+                return True
+            if target.bot or target.id == message.author.id or message.channel.id in self.trade_sessions:
+                await message.channel.send(embed=notice("Tradeo inválido", "Elige otro usuario y asegúrate de que no haya otro Tradeo activo en este canal.", 0xED4245))
+                return True
+            self.trade_sessions[message.channel.id] = {
+                "guild_id": message.guild.id, "channel_id": message.channel.id,
+                "user_a": message.author.id, "user_b": target.id,
+                "name_a": message.author.display_name, "name_b": target.display_name,
+                "offers": {message.author.id: {}, target.id: {}},
+                "confirmed": {message.author.id: False, target.id: False},
+            }
+            await message.channel.send(embed=self._trade_embed(self.trade_sessions[message.channel.id], "Tradeo iniciado 🤝", "Escriban sus cartas, por ejemplo `2 Mielabo, 1 Abo Pro`, o escriban `nada`. Después confirmen con `@Abo !confirmar`."), allowed_mentions=discord.AllowedMentions(users=True))
+            return True
+        if command == "saldo_cartas":
+            await ensure_wallet(message.guild.id, message.author.id)
+            coins = await db.fetchval("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", message.guild.id, message.author.id)
+            await message.channel.send(embed=notice("Tu saldo 💰", f"Tienes **{coins_text(coins)} Abo Coins**. Usa `!sobre` para abrir un sobre."))
+            return True
+        if command == "diario_cartas":
+            now = datetime.now(timezone.utc)
+            async with db._pool().acquire() as connection:
+                async with connection.transaction():
+                    wallet = await connection.fetchrow("""INSERT INTO card_wallets (guild_id,user_id) VALUES ($1,$2)
+                        ON CONFLICT (guild_id,user_id) DO UPDATE SET updated_at=NOW()
+                        RETURNING coins,daily_claimed_at,daily_streak""", message.guild.id, message.author.id)
+                    if wallet["daily_claimed_at"] and wallet["daily_claimed_at"].date() == now.date():
+                        await message.channel.send(embed=notice("Diario ya reclamado ⏳", "Vuelve mañana para recibir más Abo Coins.", 0xFEE75C)); return True
+                    streak = wallet["daily_streak"] + 1 if wallet["daily_claimed_at"] and (now.date() - wallet["daily_claimed_at"].date()) == timedelta(days=1) else 1
+                    reward = min(DAILY_BASE + (streak - 1) * 25, 500)
+                    await connection.execute("UPDATE card_wallets SET coins=coins+$1,daily_claimed_at=$2,daily_streak=$3,updated_at=NOW() WHERE guild_id=$4 AND user_id=$5", reward, now, streak, message.guild.id, message.author.id)
+            await message.channel.send(embed=notice("Recompensa diaria ✨", f"Recibiste **{coins_text(reward)} Abo Coins**. Racha: **{streak} días**." , 0x57F287)); return True
+        if command == "sobre":
+            await ensure_wallet(message.guild.id, message.author.id)
+            async with db._pool().acquire() as connection:
+                async with connection.transaction():
+                    wallet = await connection.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", message.guild.id, message.author.id)
+                    if wallet["coins"] < PACK_PRICE:
+                        await message.channel.send(embed=notice("No alcanzan las monedas 💸", f"El sobre cuesta **{PACK_PRICE} Abo Coins** y tienes **{wallet['coins']}**.", 0xED4245)); return True
+                    drawn = await choose_cards(connection, 3)
+                    await connection.execute("UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", PACK_PRICE, message.guild.id, message.author.id)
+                    for slug in drawn: await add_card(connection, message.guild.id, message.author.id, slug)
+                    rows = await connection.fetch("SELECT slug,name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=ANY($1::text[])", drawn)
+                    by_slug = {row["slug"]: row for row in rows}
+                    balance = wallet["coins"] - PACK_PRICE
+            lines = [f"{card_emoji(by_slug[s])} {by_slug[s]['rarity']} · **{by_slug[s]['name']}**" for s in drawn]
+            await message.channel.send(embed=notice("¡Sobre abierto! 🎴", "\n".join(f"• {x}" for x in lines) + f"\n\nSaldo: **{coins_text(balance)} Abo Coins**")); return True
+        if command == "coleccion":
+            target = message.mentions[0] if message.mentions else message.author
+            rows = await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,i.quantity,c.base_value FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0 ORDER BY c.rarity DESC,c.name""", message.guild.id, target.id)
+            description = "\n".join(f"{card_emoji(row)} **{row['name']}** · {row['rarity']} · ×{row['quantity']}" for row in rows[:25]) or "Aún no tiene cartas. Usa `!sobre` para abrir un sobre."
+            await message.channel.send(embed=notice(f"Colección de {target.display_name} 📚", description)); return True
+        if command == "carta":
+            if not argument:
+                await message.channel.send(embed=notice("Uso de !carta", "Ejemplo: `!carta Mielabo`.", 0xFEE75C)); return True
+            row = await card_row(argument)
+            if not row:
+                await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
+            owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", message.guild.id, message.author.id, row["slug"]) or 0
+            embed = notice(f"{card_emoji(row)} {row['name']}", f"Rareza: **{row['rarity']}**\nValor: **{coins_text(row['base_value'])} Abo Coins**\nTu colección: **×{owned}**", rarity_color(row["rarity"]))
+            path = ASSET_DIR / row["image_file"]
+            if row.get("image_data"):
+                filename = row["image_file"] or f"{row['slug']}.png"; embed.set_image(url=f"attachment://{filename}"); await message.channel.send(embed=embed, file=discord.File(io.BytesIO(bytes(row["image_data"])), filename=filename))
+            elif path.is_file():
+                embed.set_image(url=f"attachment://{path.name}"); await message.channel.send(embed=embed, file=discord.File(path, filename=path.name))
+            else: await message.channel.send(embed=embed)
+            return True
+        if command == "mercado":
+            rows = await db.fetch("SELECT l.id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 20", message.guild.id)
+            description = "\n".join(f"**#{r['id']}** · {card_emoji(r)} {r['name']} ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u" for r in rows) or "El mercado está vacío."
+            await message.channel.send(embed=notice("Mercado de Abo Cards 🏪", description + "\n\nPara comprar o publicar usa `/mercado_comprar` y `/mercado_publicar`.")); return True
+        if command == "ranking_cartas":
+            rows = await db.fetch("SELECT i.user_id,SUM(i.quantity*c.base_value)::BIGINT AS value,SUM(i.quantity)::BIGINT AS total,COUNT(*)::INT AS unique_cards FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.quantity>0 GROUP BY i.user_id ORDER BY value DESC,total DESC LIMIT 10", message.guild.id)
+            lines = []
+            for index,row in enumerate(rows,1):
+                member=message.guild.get_member(row["user_id"]); lines.append(f"**{index}.** {member.display_name if member else row['user_id']} · {coins_text(row['value'])} valor · {row['unique_cards']} únicas")
+            await message.channel.send(embed=notice("Ranking de coleccionistas 🏆", "\n".join(lines) or "Todavía no hay coleccionistas.")); return True
+        return True
+
+    def _trade_embed(self, session: dict, title: str, extra: str = "") -> discord.Embed:
+        def offer_text(user_id: int) -> str:
+            offer = session["offers"][user_id]
+            if not offer:
+                return "Nada"
+            return "\n".join(f"• ×{data['quantity']} {data['emoji']} **{data['name']}**" for data in offer.values())
+        embed = notice(title, extra, 0x5865F2)
+        embed.add_field(name=f"Oferta de {session['name_a']}", value=offer_text(session["user_a"]), inline=True)
+        embed.add_field(name=f"Oferta de {session['name_b']}", value=offer_text(session["user_b"]), inline=True)
+        status = "✅" if session["confirmed"][session["user_a"]] else "⏳"
+        status += "  " + ("✅" if session["confirmed"][session["user_b"]] else "⏳")
+        embed.set_footer(text=f"Confirmaciones: {status} · Menciona a Abo con !confirmar o !cancelar")
+        return embed
+
+    async def _parse_trade_offer(self, text: str) -> dict:
+        text = text.strip()
+        if text.lower() in {"nada", "nada.", "ninguna", "ninguna.", "no", "ninguno", "-"}:
+            return {}
+        parts = [part.strip() for part in re.split(r"[,\n]+", text) if part.strip()]
+        offer = {}
+        for part in parts:
+            match = re.match(r"^(\d+)\s*(?:x|×)?\s+(.+?)$", part, re.IGNORECASE)
+            if match:
+                quantity, card_name = int(match.group(1)), match.group(2).strip()
+            else:
+                quantity, card_name = 1, part
+            if quantity < 1 or quantity > 999:
+                raise ValueError("Las cantidades deben estar entre 1 y 999.")
+            row = await card_row(card_name)
+            if not row:
+                raise ValueError(f"No encontré la carta **{card_name}**.")
+            slug = row["slug"]
+            if slug in offer:
+                offer[slug]["quantity"] += quantity
+            else:
+                offer[slug] = {"quantity": quantity, "name": row["name"], "emoji": card_emoji(row)}
+        return offer
+
+    async def handle_trade_message(self, message: discord.Message) -> bool:
+        session = self.trade_sessions.get(message.channel.id)
+        if not session or message.author.id not in {session["user_a"], session["user_b"]}:
+            return False
+        content = re.sub(r"<@!?\d+>", "", message.content).strip()
+        lowered = content.lower()
+        if lowered in {"!cancelar", "!cancelado"}:
+            self.trade_sessions.pop(message.channel.id, None)
+            await message.channel.send(embed=notice("Tradeo cancelado ❌", f"{message.author.mention} canceló el intercambio.", 0xED4245), allowed_mentions=discord.AllowedMentions(users=True))
+            return True
+        if lowered in {"!confirmar", "!confirmad", "!confirmado"}:
+            offer = session["offers"][message.author.id]
+            if not offer:
+                # Nada es una oferta válida, pero se muestra qué debe hacer el usuario.
+                session["offers"][message.author.id] = {}
+            session["confirmed"][message.author.id] = True
+            if all(session["confirmed"].values()):
+                result = await self._complete_trade(session)
+                if result:
+                    self.trade_sessions.pop(message.channel.id, None)
+                    await message.channel.send(embed=result, allowed_mentions=discord.AllowedMentions(users=True))
+                else:
+                    session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
+                    await message.channel.send(embed=notice("Tradeo detenido ⚠️", "Uno de los dos usuarios ya no tiene las cartas ofrecidas. Las confirmaciones se reiniciaron.", 0xFEE75C))
+            else:
+                await message.channel.send(embed=self._trade_embed(session, "Confirmación recibida ✅", f"{message.author.mention} confirmó. Falta la confirmación del otro usuario."), allowed_mentions=discord.AllowedMentions(users=True))
+            return True
+        try:
+            offer = await self._parse_trade_offer(content)
+        except ValueError as error:
+            await message.channel.send(embed=notice("Oferta no válida", f"{error}\nUsa `2 Mielabo, 1 Abo Pro`, una carta por línea o `nada`.", 0xED4245))
+            return True
+        session["offers"][message.author.id] = offer
+        session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
+        await message.channel.send(embed=self._trade_embed(session, "Oferta actualizada 🎴", f"Oferta de {message.author.mention} guardada. Las confirmaciones se reiniciaron."), allowed_mentions=discord.AllowedMentions(users=True))
+        return True
+
+    async def _complete_trade(self, session: dict):
+        offers = session["offers"]
         async with db._pool().acquire() as connection:
             async with connection.transaction():
-                a = await connection.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE", interaction.guild_id, interaction.user.id, offered["slug"]) or 0
-                b = await connection.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE", interaction.guild_id, usuario.id, requested["slug"]) or 0
-                if a < cantidad_ofrezco or b < cantidad_pido:
-                    return await interaction.response.send_message(embed=notice("Intercambio rechazado", "Uno de los dos usuarios no tiene suficientes copias.", 0xED4245), ephemeral=True)
-                await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad_ofrezco, interaction.guild_id, interaction.user.id, offered["slug"])
-                await connection.execute("UPDATE card_inventory SET quantity=quantity+$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad_ofrezco, interaction.guild_id, usuario.id, offered["slug"])
-                await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad_pido, interaction.guild_id, usuario.id, requested["slug"])
-                await add_card(connection, interaction.guild_id, interaction.user.id, requested["slug"], cantidad_pido)
-                await connection.execute("INSERT INTO card_trades (guild_id,sender_id,receiver_id,offered_slug,offered_quantity,requested_slug,requested_quantity) VALUES ($1,$2,$3,$4,$5,$6,$7)", interaction.guild_id, interaction.user.id, usuario.id, offered["slug"], cantidad_ofrezco, requested["slug"], cantidad_pido)
-        await interaction.response.send_message(embed=notice("Intercambio completado 🤝", f"{interaction.user.mention} recibió **{cantidad_ofrezco}× {card_emoji(offered)} {offered['name']}** y entregó **{cantidad_pido}× {card_emoji(requested)} {requested['name']}**."), allowed_mentions=discord.AllowedMentions(users=True))
+                checks = []
+                for user_id in (session["user_a"], session["user_b"]):
+                    for slug, data in offers[user_id].items():
+                        checks.append((user_id, slug, data["quantity"]))
+                for user_id, slug, quantity in sorted(checks):
+                    owned = await connection.fetchval(
+                        "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                        session["guild_id"], user_id, slug,
+                    ) or 0
+                    if owned < quantity:
+                        return None
+                for sender, receiver in ((session["user_a"], session["user_b"]), (session["user_b"], session["user_a"])):
+                    for slug, data in offers[sender].items():
+                        await connection.execute(
+                            "UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4",
+                            data["quantity"], session["guild_id"], sender, slug,
+                        )
+                        await add_card(connection, session["guild_id"], receiver, slug, data["quantity"])
+                await connection.execute(
+                    """INSERT INTO card_trade_sessions (guild_id,user_a,user_b,offer_a,offer_b,status,completed_at)
+                       VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,'completed',NOW())""",
+                    session["guild_id"], session["user_a"], session["user_b"],
+                    __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_a"]].items()}),
+                    __import__("json").dumps({slug: data["quantity"] for slug, data in offers[session["user_b"]].items()}),
+                )
+        return notice("¡Tradeo completado! 🎉", f"{session['name_a']} y {session['name_b']} confirmaron el intercambio. Las cartas fueron transferidas correctamente.", 0x57F287)
 
     @app_commands.command(name="mercado_publicar", description="Publica copias de una carta en el mercado")
     @app_commands.guild_only()
