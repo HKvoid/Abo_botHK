@@ -1,13 +1,45 @@
 
 
-## Fase de progresión y administración
+## Sistema de personajes pixel art
 
-Abo Cards ahora incluye `/perfil` y `!perfil`, con nivel, XP, saldo, colección, valor total, sobres abiertos y progreso de pity. Los usuarios ganan XP al abrir sobres, reclamar el diario y completar Tradeos; el nivel se calcula automáticamente por bloques de 1,000 XP.
+El catálogo ya no usa plantillas visuales de cartas. Cada entrada representa un personaje y se muestra con su imagen pixel art como archivo adjunto de Discord, acompañada por un embed configurable.
 
-El sistema pity garantiza una carta Rara o superior después de cinco sobres sin obtener una carta de esa categoría y una carta Épica o Legendaria después de quince sobres sin obtener una carta épica. El contador aparece en el perfil y se reinicia al obtener la rareza correspondiente.
+El embed incluye:
 
-Los mensajes de sobre abierto, subida de nivel, pity y set completado se pueden editar desde el panel Abo Cards del dashboard. Admiten variables como `{cards}`, `{balance}`, `{level}`, `{xp}`, `{set_name}` y `{reward}`.
+- Nombre del personaje.
+- Rareza.
+- Valor en Abo Coins.
+- Cantidad que posee el usuario.
+- Descripción o historia personalizada.
+- Stats y características personalizadas.
+- Color de embed configurable.
 
-Los Tradeos se guardan en Neon desde el momento en que se crean. Sus ofertas, confirmaciones, canal y participantes se restauran después de reiniciar Abo; cancelar y completar un Tradeo actualizan su estado persistente.
+Los assets iniciales fueron reemplazados por los 17 personajes del paquete `abo.zip`. Al primer arranque después de esta actualización, Abo limpia una sola vez las imágenes antiguas almacenadas en Neon. En los siguientes arranques no borra imágenes nuevas que se suban desde el dashboard.
 
-Las herramientas administrativas disponibles para usuarios con permiso de gestionar el servidor son `/cartas_regalar`, `/cartas_retirar`, `/cartas_saldo` y `/cartas_resetear`. También existe el acceso `!cartas`, con subcomandos `regalar`, `retirar`, `saldo` y `resetear`. Cada acción administrativa se registra en `card_admin_audit`.
+### Editor flexible del dashboard
+
+El editor de personajes permite cambiar:
+
+- Slug y nombre visible.
+- Imagen del personaje.
+- Rareza.
+- Color decimal del embed.
+- Peso de aparición en sobres.
+- Valor base.
+- Set o colección.
+- Descripción de hasta 4,000 caracteres.
+- Hasta 30 stats con formato JSON libre.
+- Etiquetas separadas por comas.
+
+Ejemplo de stats:
+
+```json
+{
+  "Vida": "100",
+  "Ataque": "25",
+  "Clase": "Mago",
+  "Habilidad": "Lluvia de miel"
+}
+```
+
+El inventario, mercado, economía, Tradeos, sets, niveles, pity y recompensas se conservan; únicamente cambia la presentación visual y la forma de editar la ficha del personaje.
