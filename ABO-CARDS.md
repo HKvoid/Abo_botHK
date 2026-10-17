@@ -1,9 +1,13 @@
 
 
-## Mejoras de la colección y el mercado
+## Fase de progresión y administración
 
-La colección ahora puede consultarse con `/coleccion` o `!coleccion`, tiene paginación con botones y acepta los filtros `faltantes`, `repetidas`, `Común`, `Rara`, `Épica` y `Legendaria`. Los botones solo pueden ser utilizados por la persona que abrió esa vista.
+Abo Cards ahora incluye `/perfil` y `!perfil`, con nivel, XP, saldo, colección, valor total, sobres abiertos y progreso de pity. Los usuarios ganan XP al abrir sobres, reclamar el diario y completar Tradeos; el nivel se calcula automáticamente por bloques de 1,000 XP.
 
-Los sets se guardan en Neon mediante `card_sets`. Se pueden consultar con `/sets`, `!sets`, `/set <nombre>` o `!set <nombre>`. Cada set muestra las cartas obtenidas y faltantes, junto con el progreso del usuario. Las cartas creadas desde el dashboard pueden asignarse a un set mediante el campo `Set / colección`; si el set no existía, el dashboard lo crea automáticamente.
+El sistema pity garantiza una carta Rara o superior después de cinco sobres sin obtener una carta de esa categoría y una carta Épica o Legendaria después de quince sobres sin obtener una carta épica. El contador aparece en el perfil y se reinicia al obtener la rareza correspondiente.
 
-El mercado muestra ahora el vendedor, incluye botones para comprar una copia y para consultar al vendedor. La compra por botón usa la misma operación centralizada y transacción atómica que las operaciones de mercado, por lo que valida saldo, disponibilidad y que no se compre la propia publicación.
+Los mensajes de sobre abierto, subida de nivel, pity y set completado se pueden editar desde el panel Abo Cards del dashboard. Admiten variables como `{cards}`, `{balance}`, `{level}`, `{xp}`, `{set_name}` y `{reward}`.
+
+Los Tradeos se guardan en Neon desde el momento en que se crean. Sus ofertas, confirmaciones, canal y participantes se restauran después de reiniciar Abo; cancelar y completar un Tradeo actualizan su estado persistente.
+
+Las herramientas administrativas disponibles para usuarios con permiso de gestionar el servidor son `/cartas_regalar`, `/cartas_retirar`, `/cartas_saldo` y `/cartas_resetear`. También existe el acceso `!cartas`, con subcomandos `regalar`, `retirar`, `saldo` y `resetear`. Cada acción administrativa se registra en `card_admin_audit`.
