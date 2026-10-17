@@ -1,17 +1,9 @@
 
 
-## Comandos rápidos con `!`
+## Mejoras de la colección y el mercado
 
-Abo Cards conserva todos los comandos slash y añade atajos de texto para jugar más rápido:
+La colección ahora puede consultarse con `/coleccion` o `!coleccion`, tiene paginación con botones y acepta los filtros `faltantes`, `repetidas`, `Común`, `Rara`, `Épica` y `Legendaria`. Los botones solo pueden ser utilizados por la persona que abrió esa vista.
 
-- `!sobre` o `!pack`
-- `!coleccion [@usuario]`
-- `!carta <nombre>`
-- `!saldo` o `!saldo_cartas`
-- `!diario` o `!diario_cartas`
-- `!mercado`
-- `!ranking` o `!ranking_cartas`
-- `!tradeo @usuario`
-- `!ayudacartas`
+Los sets se guardan en Neon mediante `card_sets`. Se pueden consultar con `/sets`, `!sets`, `/set <nombre>` o `!set <nombre>`. Cada set muestra las cartas obtenidas y faltantes, junto con el progreso del usuario. Las cartas creadas desde el dashboard pueden asignarse a un set mediante el campo `Set / colección`; si el set no existía, el dashboard lo crea automáticamente.
 
-Los comandos complejos del mercado (`/mercado_publicar`, `/mercado_comprar` y `/mercado_cancelar`) permanecen como slash commands para conservar autocompletado y evitar errores con cantidades y precios. Dentro de un Tradeo siguen funcionando `@Abo !confirmar`, `@Abo !confirmad` y `@Abo !cancelar`.
+El mercado muestra ahora el vendedor, incluye botones para comprar una copia y para consultar al vendedor. La compra por botón usa la misma operación centralizada y transacción atómica que las operaciones de mercado, por lo que valida saldo, disponibilidad y que no se compre la propia publicación.
