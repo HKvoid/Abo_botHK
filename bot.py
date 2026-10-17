@@ -85,6 +85,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    cards_cog = bot.get_cog("CardsCog")
+    if cards_cog and await cards_cog.handle_trade_message(message):
+        return
+    if cards_cog and await cards_cog.handle_card_prefix(message):
+        return
     if bot.user in message.mentions:
         texto = re.sub(r"<@!?\d+>", "", message.content).strip()
         async with message.channel.typing():

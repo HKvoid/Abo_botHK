@@ -1,7 +1,17 @@
 
 
-## Emojis personalizados y catálogo administrable
+## Comandos rápidos con `!`
 
-Las 17 cartas iniciales tienen asociados los nombres e IDs de emojis personalizados del servidor. Abo los muestra en `/coleccion`, `/sobre`, `/carta`, intercambios y mercado; si una carta no tiene emoji configurado usa un emoji de respaldo según su rareza.
+Abo Cards conserva todos los comandos slash y añade atajos de texto para jugar más rápido:
 
-Desde la sección **🎴 Cartas** del dashboard se pueden crear, editar y archivar cartas. Una carta nueva guarda en Neon su slug, nombre, rareza, peso de aparición, valor base, nombre/ID del emoji e imagen binaria. El bot consulta primero la imagen guardada en Neon y después intenta usar un asset local para las cartas incluidas en el paquete.
+- `!sobre` o `!pack`
+- `!coleccion [@usuario]`
+- `!carta <nombre>`
+- `!saldo` o `!saldo_cartas`
+- `!diario` o `!diario_cartas`
+- `!mercado`
+- `!ranking` o `!ranking_cartas`
+- `!tradeo @usuario`
+- `!ayudacartas`
+
+Los comandos complejos del mercado (`/mercado_publicar`, `/mercado_comprar` y `/mercado_cancelar`) permanecen como slash commands para conservar autocompletado y evitar errores con cantidades y precios. Dentro de un Tradeo siguen funcionando `@Abo !confirmar`, `@Abo !confirmad` y `@Abo !cancelar`.
