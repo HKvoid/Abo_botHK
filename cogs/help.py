@@ -20,12 +20,13 @@ class HelpCog(commands.Cog):
         embed.add_field(name="🎫 Soporte", value="Usa el botón del panel de tickets para abrir una conversación privada con el staff.", inline=False)
         embed.add_field(name="🎴 Abo Cards", value=(
             "`/sobre` — Abre un sobre de 3 cartas\n"
-            "`/coleccion [usuario]` — Consulta un álbum\n"
+            "`/coleccion [usuario] [filtro]` — Álbum paginado; filtros: `faltantes`, `repetidas` o rareza\n"
             "`/carta <nombre>` — Mira una carta e imagen\n"
             "`/diario_cartas` y `/saldo_cartas` — Economía\n"
             "`/tradeo <usuario>` — Propón cartas, confirma mencionando a Abo con `!confirmar` o cancela con `!cancelar`\n"
-            "Atajos rápidos: `!sobre`, `!coleccion`, `!carta <nombre>`, `!saldo`, `!diario`, `!mercado`, `!ranking`, `!tradeo @usuario`\n"
-            "`/mercado` — Compra, publica o retira cartas\n"
+            "Atajos rápidos: `!sobre`, `!coleccion [filtro]`, `!carta <nombre>`, `!saldo`, `!diario`, `!sets`, `!set <nombre>`, `!mercado`, `!ranking`, `!tradeo @usuario`\n"
+            "`/sets` y `/set <nombre>` — Sets temáticos y progreso de colección\n"
+            "`/mercado` — Consulta el mercado y usa botones para comprar o ver al vendedor\n"
             "`/ranking_cartas` — Ranking por valor de colección"
         ), inline=False)
         if es_staff:

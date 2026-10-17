@@ -107,6 +107,128 @@ def card_emoji(row) -> str:
     return RARITY_EMOJI.get(row.get("rarity"), "🎴")
 
 
+async def collection_rows(guild_id: int, user_id: int, filter_name: str = ""):
+    filter_name = (filter_name or "").strip().lower()
+    if filter_name in {"faltantes", "faltantes"}:
+        return await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,0::int AS quantity,c.base_value
+            FROM card_catalog c WHERE c.active=TRUE AND NOT EXISTS
+            (SELECT 1 FROM card_inventory i WHERE i.guild_id=$1 AND i.user_id=$2 AND i.card_slug=c.slug AND i.quantity>0)
+            ORDER BY c.rarity DESC,c.name""", guild_id, user_id)
+    extra = ""
+    args = [guild_id, user_id]
+    if filter_name in {"comun", "común", "rara", "epica", "épica", "legendaria"}:
+        extra = " AND c.rarity=$3"
+        args.append({"comun":"Común","común":"Común","rara":"Rara","epica":"Épica","épica":"Épica","legendaria":"Legendaria"}[filter_name])
+    elif filter_name in {"repetidas", "repetida"}:
+        extra = " AND i.quantity>1"
+    return await db.fetch(f"""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,i.quantity,c.base_value
+        FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug
+        WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0{extra}
+        ORDER BY c.rarity DESC,c.name""", *args)
+
+
+def collection_embed(target_name: str, rows, page: int, filter_name: str = ""):
+    per_page = 8
+    total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    chunk = rows[page * per_page:(page + 1) * per_page]
+    description = "\n".join(f"{card_emoji(row)} **{row['name']}** · {row['rarity']} · ×{row['quantity']}" for row in chunk)
+    description = description or ("No hay cartas con este filtro." if filter_name else "Aún no tienes cartas. Usa `/sobre` o `!sobre`.")
+    embed = notice(f"Colección de {target_name} 📚", description)
+    total = sum(row["quantity"] for row in rows)
+    value = sum(row["quantity"] * row["base_value"] for row in rows)
+    embed.add_field(name="Cartas mostradas", value=f"{len(rows)}", inline=True)
+    embed.add_field(name="Copias", value=str(total), inline=True)
+    embed.add_field(name="Valor", value=f"{coins_text(value)} Abo Coins", inline=True)
+    embed.set_footer(text=f"Página {page + 1}/{total_pages} · Filtro: {filter_name or 'todas'}")
+    return embed, total_pages
+
+
+class CollectionView(discord.ui.View):
+    def __init__(self, owner_id: int, target_name: str, rows, filter_name: str = ""):
+        super().__init__(timeout=180)
+        self.owner_id, self.target_name, self.rows, self.filter_name, self.page = owner_id, target_name, rows, filter_name, 0
+        self._sync()
+
+    def _sync(self):
+        pages = max(1, (len(self.rows) + 7) // 8)
+        self.previous.disabled = self.page <= 0
+        self.next.disabled = self.page >= pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Solo quien abrió esta colección puede cambiar sus páginas.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Anterior", emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1; self._sync()
+        embed, _ = collection_embed(self.target_name, self.rows, self.page, self.filter_name)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Siguiente", emoji="▶️", style=discord.ButtonStyle.primary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1; self._sync()
+        embed, _ = collection_embed(self.target_name, self.rows, self.page, self.filter_name)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+async def purchase_listing(guild_id: int, user_id: int, listing_id: int, quantity: int = 1):
+    async with db._pool().acquire() as connection:
+        async with connection.transaction():
+            listing = await connection.fetchrow("SELECT * FROM card_market_listings WHERE id=$1 AND guild_id=$2 AND status='active' FOR UPDATE", listing_id, guild_id)
+            if not listing or listing["remaining"] < quantity:
+                return None, "La publicación no existe o no tiene suficientes copias."
+            if listing["seller_id"] == user_id:
+                return None, "No puedes comprarte tu propia publicación."
+            total = listing["price_each"] * quantity
+            buyer = await connection.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", guild_id, user_id)
+            if not buyer or buyer["coins"] < total:
+                return None, f"Necesitas **{coins_text(total)} Abo Coins**."
+            await connection.execute("UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", total, guild_id, user_id)
+            await connection.execute("INSERT INTO card_wallets (guild_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", guild_id, listing["seller_id"])
+            await connection.execute("UPDATE card_wallets SET coins=coins+$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", total, guild_id, listing["seller_id"])
+            await add_card(connection, guild_id, user_id, listing["card_slug"], quantity)
+            remaining = listing["remaining"] - quantity
+            await connection.execute("UPDATE card_market_listings SET remaining=$1,status=CASE WHEN $1=0 THEN 'sold' ELSE status END WHERE id=$2", remaining, listing_id)
+            card = await connection.fetchrow("SELECT name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=$1", listing["card_slug"])
+    return {"card": card, "quantity": quantity, "total": total, "seller_id": listing["seller_id"]}, None
+
+
+class CardService:
+    """Capa compartida para que slash, prefijo y botones usen las mismas operaciones."""
+
+    collection = staticmethod(collection_rows)
+    purchase_listing = staticmethod(purchase_listing)
+
+
+class MarketView(discord.ui.View):
+    def __init__(self, rows):
+        super().__init__(timeout=180)
+        for row in rows[:10]:
+            buy = discord.ui.Button(label=f"Comprar #{row['id']}", emoji="🛒", style=discord.ButtonStyle.success, custom_id=f"market_buy:{row['id']}")
+            seller = discord.ui.Button(label="Vendedor", emoji="👤", style=discord.ButtonStyle.secondary, custom_id=f"market_seller:{row['id']}")
+            buy.callback = self._buy_callback(row["id"])
+            seller.callback = self._seller_callback(row["seller_id"])
+            self.add_item(buy); self.add_item(seller)
+
+    def _buy_callback(self, listing_id):
+        async def callback(interaction: discord.Interaction):
+            result, error = await CardService.purchase_listing(interaction.guild_id, interaction.user.id, listing_id)
+            if error:
+                return await interaction.response.send_message(embed=notice("Compra no realizada", error, 0xED4245), ephemeral=True)
+            await interaction.response.send_message(embed=notice("Compra completada 🛒", f"Compraste **×{result['quantity']} {card_emoji(result['card'])} {result['card']['name']}** por **{coins_text(result['total'])} Abo Coins**."), ephemeral=True)
+        return callback
+
+    def _seller_callback(self, seller_id):
+        async def callback(interaction: discord.Interaction):
+            member = interaction.guild.get_member(seller_id)
+            text = member.mention if member else f"Usuario `{seller_id}`"
+            await interaction.response.send_message(embed=notice("Vendedor 👤", f"Esta publicación pertenece a {text}."), ephemeral=True, allowed_mentions=discord.AllowedMentions(users=True))
+        return callback
+
+
 async def ensure_wallet(guild_id: int, user_id: int) -> None:
     await db.execute(
         "INSERT INTO card_wallets (guild_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
@@ -194,26 +316,40 @@ class CardsCog(commands.Cog):
         lines = [f"{card_emoji(by_slug[s])} {by_slug[s]['rarity']} · **{by_slug[s]['name']}**" for s in drawn]
         await interaction.response.send_message(embed=notice("¡Sobre abierto! 🎴", "\n".join(f"• {line}" for line in lines) + f"\n\nSaldo restante: **{coins_text(balance)} Abo Coins**"), ephemeral=True)
 
-    @app_commands.command(name="coleccion", description="Muestra tu colección de cartas")
+    @app_commands.command(name="coleccion", description="Muestra tu colección paginada")
     @app_commands.guild_only()
-    async def coleccion(self, interaction: discord.Interaction, usuario: discord.Member | None = None):
+    @app_commands.describe(usuario="Miembro cuya colección consultar", filtro="todas, faltantes, repetidas o una rareza")
+    async def coleccion(self, interaction: discord.Interaction, usuario: discord.Member | None = None, filtro: str | None = None):
         target = usuario or interaction.user
-        rows = await db.fetch(
-            """SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,i.quantity,c.base_value FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug
-               WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0 ORDER BY c.rarity DESC,c.name""",
-            interaction.guild_id, target.id,
-        )
-        total = sum(row["quantity"] for row in rows)
-        value = sum(row["quantity"] * row["base_value"] for row in rows)
-        if not rows:
-            description = "Aún no tienes cartas. Usa `/sobre` para abrir tu primer sobre."
-        else:
-            description = "\n".join(f"{card_emoji(row)} **{row['name']}** · {row['rarity']} · ×{row['quantity']}" for row in rows[:25])
-            if len(rows) > 25: description += f"\n… y {len(rows)-25} cartas más"
-        embed = notice(f"Colección de {target.display_name} 📚", description)
-        embed.add_field(name="Cartas únicas", value=str(len(rows)), inline=True)
-        embed.add_field(name="Total de cartas", value=str(total), inline=True)
-        embed.add_field(name="Valor base", value=f"{coins_text(value)} Abo Coins", inline=True)
+        rows = await collection_rows(interaction.guild_id, target.id, filtro or "")
+        embed, pages = collection_embed(target.display_name, rows, 0, filtro or "")
+        view = CollectionView(interaction.user.id, target.display_name, rows, filtro or "") if pages > 1 else None
+        await interaction.response.send_message(embed=embed, view=view)
+
+    @app_commands.command(name="sets", description="Muestra los sets de Abo Cards")
+    @app_commands.guild_only()
+    async def sets(self, interaction: discord.Interaction):
+        rows = await db.fetch("""SELECT s.slug,s.name,s.description,COUNT(c.slug)::int AS total,
+            COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned
+            FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE
+            LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2
+            WHERE s.active=TRUE GROUP BY s.slug,s.name,s.description ORDER BY s.name""", interaction.guild_id, interaction.user.id)
+        description = "\n".join(f"🎴 **{r['name']}** · {r['owned']}/{r['total']} cartas\n{r['description']}" for r in rows) or "Todavía no hay sets disponibles."
+        await interaction.response.send_message(embed=notice("Sets de Abo Cards 🗂️", description))
+
+    @app_commands.command(name="set", description="Muestra las cartas de un set")
+    @app_commands.guild_only()
+    @app_commands.describe(nombre="Slug o nombre del set")
+    async def set_cartas(self, interaction: discord.Interaction, nombre: str):
+        row = await db.fetchrow("SELECT slug,name,description FROM card_sets WHERE active=TRUE AND (slug=$1 OR name ILIKE $2)", nombre.lower(), nombre)
+        if not row:
+            return await interaction.response.send_message(embed=notice("Set no encontrado", "Usa `/sets` para ver los sets disponibles.", 0xED4245), ephemeral=True)
+        cards = await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity
+            FROM card_catalog c LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2
+            WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name""", interaction.guild_id, interaction.user.id, row["slug"])
+        description = "\n".join(f"{'✅' if c['quantity'] else '❌'} {card_emoji(c)} **{c['name']}** · ×{c['quantity']}" for c in cards) or "Este set no tiene cartas."
+        owned = sum(1 for c in cards if c["quantity"] > 0)
+        embed = notice(f"{row['name']} 🗂️", f"{row['description']}\n\nProgreso: **{owned}/{len(cards)}**\n\n{description}")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="carta", description="Muestra los detalles de una carta")
@@ -277,10 +413,10 @@ class CardsCog(commands.Cog):
         aliases = {
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
-            "market": "mercado", "ranking": "ranking_cartas",
+            "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "ayudacartas"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "ayudacartas"}
         if command not in quick:
             return False
         if command == "ayudacartas":
@@ -303,6 +439,18 @@ class CardsCog(commands.Cog):
             }
             await message.channel.send(embed=self._trade_embed(self.trade_sessions[message.channel.id], "Tradeo iniciado 🤝", "Escriban sus cartas, por ejemplo `2 Mielabo, 1 Abo Pro`, o escriban `nada`. Después confirmen con `@Abo !confirmar`."), allowed_mentions=discord.AllowedMentions(users=True))
             return True
+        if command in {"sets", "set"}:
+            set_name = argument if command == "set" else ""
+            if command == "sets":
+                rows = await db.fetch("""SELECT s.slug,s.name,s.description,COUNT(c.slug)::int AS total,COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE s.active=TRUE GROUP BY s.slug,s.name,s.description ORDER BY s.name""", message.guild.id, message.author.id)
+                text = "\n".join(f"🎴 **{r['name']}** · {r['owned']}/{r['total']} cartas" for r in rows) or "Todavía no hay sets disponibles."
+                await message.channel.send(embed=notice("Sets de Abo Cards 🗂️", text)); return True
+            row = await db.fetchrow("SELECT slug,name,description FROM card_sets WHERE active=TRUE AND (slug=$1 OR name ILIKE $2)", set_name.lower(), set_name)
+            if not row:
+                await message.channel.send(embed=notice("Set no encontrado", "Usa `!sets` para ver los sets disponibles.", 0xED4245)); return True
+            cards = await db.fetch("SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity FROM card_catalog c LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name", message.guild.id, message.author.id, row["slug"])
+            text = "\n".join(f"{'✅' if c['quantity'] else '❌'} {card_emoji(c)} **{c['name']}** · ×{c['quantity']}" for c in cards)
+            await message.channel.send(embed=notice(f"{row['name']} 🗂️", f"Progreso: **{sum(1 for c in cards if c['quantity']>0)}/{len(cards)}**\n\n{text}")); return True
         if command == "saldo_cartas":
             await ensure_wallet(message.guild.id, message.author.id)
             coins = await db.fetchval("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", message.guild.id, message.author.id)
@@ -338,9 +486,11 @@ class CardsCog(commands.Cog):
             await message.channel.send(embed=notice("¡Sobre abierto! 🎴", "\n".join(f"• {x}" for x in lines) + f"\n\nSaldo: **{coins_text(balance)} Abo Coins**")); return True
         if command == "coleccion":
             target = message.mentions[0] if message.mentions else message.author
-            rows = await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,i.quantity,c.base_value FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0 ORDER BY c.rarity DESC,c.name""", message.guild.id, target.id)
-            description = "\n".join(f"{card_emoji(row)} **{row['name']}** · {row['rarity']} · ×{row['quantity']}" for row in rows[:25]) or "Aún no tiene cartas. Usa `!sobre` para abrir un sobre."
-            await message.channel.send(embed=notice(f"Colección de {target.display_name} 📚", description)); return True
+            filter_name = re.sub(r"<@!?\d+>", "", argument).strip()
+            rows = await collection_rows(message.guild.id, target.id, filter_name)
+            embed, pages = collection_embed(target.display_name, rows, 0, filter_name)
+            view = CollectionView(message.author.id, target.display_name, rows, filter_name) if pages > 1 else None
+            await message.channel.send(embed=embed, view=view); return True
         if command == "carta":
             if not argument:
                 await message.channel.send(embed=notice("Uso de !carta", "Ejemplo: `!carta Mielabo`.", 0xFEE75C)); return True
@@ -357,9 +507,9 @@ class CardsCog(commands.Cog):
             else: await message.channel.send(embed=embed)
             return True
         if command == "mercado":
-            rows = await db.fetch("SELECT l.id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 20", message.guild.id)
-            description = "\n".join(f"**#{r['id']}** · {card_emoji(r)} {r['name']} ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u" for r in rows) or "El mercado está vacío."
-            await message.channel.send(embed=notice("Mercado de Abo Cards 🏪", description + "\n\nPara comprar o publicar usa `/mercado_comprar` y `/mercado_publicar`.")); return True
+            rows = await db.fetch("SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 20", message.guild.id)
+            description = "\n".join(f"**#{r['id']}** · {card_emoji(r)} {r['name']} ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u · Vendedor: <@{r['seller_id']}>" for r in rows) or "El mercado está vacío."
+            await message.channel.send(embed=notice("Mercado de Abo Cards 🏪", description + "\n\nUsa los botones para comprar 1 copia o ver al vendedor."), view=MarketView(rows), allowed_mentions=discord.AllowedMentions(users=True)); return True
         if command == "ranking_cartas":
             rows = await db.fetch("SELECT i.user_id,SUM(i.quantity*c.base_value)::BIGINT AS value,SUM(i.quantity)::BIGINT AS total,COUNT(*)::INT AS unique_cards FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.quantity>0 GROUP BY i.user_id ORDER BY value DESC,total DESC LIMIT 10", message.guild.id)
             lines = []
@@ -493,9 +643,9 @@ class CardsCog(commands.Cog):
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
     async def mercado(self, interaction: discord.Interaction):
-        rows = await db.fetch("""SELECT l.id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 20""", interaction.guild_id)
-        description = "\n".join(f"**#{r['id']}** · {card_emoji(r)} {r['name']} ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u" for r in rows) or "El mercado está vacío."
-        await interaction.response.send_message(embed=notice("Mercado de Abo Cards 🏪", description + "\n\nCompra con `/mercado_comprar id cantidad`."))
+        rows = await db.fetch("""SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 20""", interaction.guild_id)
+        description = "\n".join(f"**#{r['id']}** · {card_emoji(r)} {r['name']} ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u · Vendedor: <@{r['seller_id']}>" for r in rows) or "El mercado está vacío."
+        await interaction.response.send_message(embed=notice("Mercado de Abo Cards 🏪", description + "\n\nUsa los botones para comprar 1 copia o ver al vendedor."), view=MarketView(rows), allowed_mentions=discord.AllowedMentions(users=True))
 
     @app_commands.command(name="mercado_cancelar", description="Retira una publicación propia y recupera las cartas")
     @app_commands.guild_only()
