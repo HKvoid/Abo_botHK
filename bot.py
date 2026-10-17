@@ -42,6 +42,9 @@ class AboBot(commands.Bot):
         )
         for cog_class in cogs:
             await self.add_cog(cog_class(self))
+        cards_cog = self.get_cog("CardsCog")
+        if cards_cog:
+            await cards_cog.restore_trade_sessions()
         await self.tree.sync()
         log.info("Cogs cargados y comandos slash sincronizados: %s", len(self.tree.get_commands()))
 

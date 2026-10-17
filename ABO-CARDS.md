@@ -43,3 +43,10 @@ Ejemplo de stats:
 ```
 
 El inventario, mercado, economía, Tradeos, sets, niveles, pity y recompensas se conservan; únicamente cambia la presentación visual y la forma de editar la ficha del personaje.
+
+
+## Stats de combate
+
+El dashboard incluye ahora campos dedicados para `HP`, `ATK`, `Speed` y `Clase`. También permite configurar una `Habilidad` y una `Pasiva`, cada una con nombre, descripción y daño. El daño admite valores como `25`, `25-40` o `10%`, para que el sistema pueda soportar daño fijo, rangos o porcentajes.
+
+Estos campos se guardan dentro de `stats` con las claves `HP`, `ATK`, `Speed`, `Clase`, `Habilidad`, `Descripción de habilidad`, `Daño de habilidad`, `Pasiva`, `Descripción de pasiva` y `Daño de pasiva`. Las stats extra en JSON siguen disponibles y se muestran junto con los campos de combate en el embed del personaje.
