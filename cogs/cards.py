@@ -301,14 +301,34 @@ async def card_message(guild_id: int, key: str, **values) -> discord.Embed:
 
 
 async def award_xp(guild_id: int, user_id: int, amount: int) -> tuple[int, bool]:
+    # Operación atómica: actualiza XP y nivel en un solo UPDATE para evitar que
+    # dos llamadas concurrentes detecten el mismo level-up y envíen dos mensajes.
     async with db._pool().acquire() as connection:
-        row = await connection.fetchrow("""INSERT INTO card_wallets (guild_id,user_id,xp,level) VALUES ($1,$2,$3,$4)
-            ON CONFLICT (guild_id,user_id) DO UPDATE SET xp=card_wallets.xp+$3,level=GREATEST(card_wallets.level,$4),updated_at=NOW()
-            RETURNING xp,level""", guild_id, user_id, amount, level_for_xp(amount))
+        row = await connection.fetchrow(
+            """UPDATE card_wallets
+               SET xp = xp + $3,
+                   level = GREATEST(level, (xp + $3) / 1000 + 1),
+                   updated_at = NOW()
+               WHERE guild_id = $1 AND user_id = $2
+               RETURNING xp, level,
+                         (level > (xp - $3) / 1000 + 1) AS just_leveled_up""",
+            guild_id, user_id, amount,
+        )
+        if row is None:
+            # Wallet no existe todavía; la creamos con el XP inicial.
+            row = await connection.fetchrow(
+                """INSERT INTO card_wallets (guild_id, user_id, xp, level)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (guild_id, user_id) DO UPDATE
+                   SET xp = card_wallets.xp + $3,
+                       level = GREATEST(card_wallets.level, (card_wallets.xp + $3) / 1000 + 1),
+                       updated_at = NOW()
+                   RETURNING xp, level,
+                             (level > (xp - $3) / 1000 + 1) AS just_leveled_up""",
+                guild_id, user_id, amount, level_for_xp(amount),
+            )
         new_level = level_for_xp(row["xp"])
-        if new_level != row["level"]:
-            await connection.execute("UPDATE card_wallets SET level=$1 WHERE guild_id=$2 AND user_id=$3", new_level, guild_id, user_id)
-        return new_level, new_level > row["level"]
+        return new_level, bool(row["just_leveled_up"])
 
 
 async def claim_set_reward(guild_id: int, user_id: int, set_slug: str):
@@ -391,12 +411,11 @@ class CardsCog(commands.Cog):
     @app_commands.guild_only()
     async def diario_cartas(self, interaction: discord.Interaction):
         now = datetime.now(timezone.utc)
+        await ensure_wallet(interaction.guild_id, interaction.user.id)
         async with db._pool().acquire() as connection:
             async with connection.transaction():
                 wallet = await connection.fetchrow(
-                    """INSERT INTO card_wallets (guild_id,user_id) VALUES ($1,$2)
-                       ON CONFLICT (guild_id,user_id) DO UPDATE SET updated_at=NOW()
-                       RETURNING coins, daily_claimed_at, daily_streak""",
+                    "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
                     interaction.guild_id, interaction.user.id,
                 )
                 last = wallet["daily_claimed_at"]
@@ -665,8 +684,16 @@ class CardsCog(commands.Cog):
                 card_name = " ".join(args[2:-1]) if args[-1].isdigit() else " ".join(args[2:]); amount = int(args[-1]) if args[-1].isdigit() else 1; row = await card_row(card_name)
                 if not row: await message.channel.send(embed=notice("Carta no encontrada", "Indica una carta válida.", 0xED4245)); return True
                 async with db._pool().acquire() as connection:
-                    if sub == "regalar": await add_card(connection, message.guild.id, target.id, row["slug"], amount)
-                    else: await connection.execute("UPDATE card_inventory SET quantity=GREATEST(0,quantity-$1) WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", amount, message.guild.id, target.id, row["slug"])
+                    if sub == "regalar":
+                        await add_card(connection, message.guild.id, target.id, row["slug"], amount)
+                    else:
+                        result = await connection.execute(
+                            "UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4 AND quantity >= $1",
+                            amount, message.guild.id, target.id, row["slug"],
+                        )
+                        if result.endswith("0"):
+                            await message.channel.send(embed=notice("No se pudo retirar", f"{target.mention} no tiene suficientes copias de **{row['name']}**.", 0xED4245))
+                            return True
                     await connection.execute("INSERT INTO card_admin_audit (guild_id,actor_id,action,target_id,card_slug,quantity) VALUES ($1,$2,$3,$4,$5,$6)", message.guild.id, message.author.id, "grant" if sub == "regalar" else "remove", target.id, row["slug"], amount)
                 await message.channel.send(embed=notice("Operación completada ✅", f"{sub.title()}: **×{amount} {card_emoji(row)} {row['name']}** a {target.mention}.")); return True
             await message.channel.send(embed=notice("Herramientas de cartas", "`!cartas regalar @usuario <carta> [cantidad]` · `!cartas retirar @usuario <carta> [cantidad]` · `!cartas saldo @usuario <cantidad>` · `!cartas resetear @usuario")); return True
@@ -692,11 +719,12 @@ class CardsCog(commands.Cog):
             return True
         if command == "diario_cartas":
             now = datetime.now(timezone.utc)
+            await ensure_wallet(message.guild.id, message.author.id)
             async with db._pool().acquire() as connection:
                 async with connection.transaction():
-                    wallet = await connection.fetchrow("""INSERT INTO card_wallets (guild_id,user_id) VALUES ($1,$2)
-                        ON CONFLICT (guild_id,user_id) DO UPDATE SET updated_at=NOW()
-                        RETURNING coins,daily_claimed_at,daily_streak""", message.guild.id, message.author.id)
+                    wallet = await connection.fetchrow(
+                        "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
+                        message.guild.id, message.author.id)
                     if wallet["daily_claimed_at"] and wallet["daily_claimed_at"].date() == now.date():
                         await message.channel.send(embed=notice("Diario ya reclamado ⏳", "Vuelve mañana para recibir más Abo Coins.", 0xFEE75C)); return True
                     streak = wallet["daily_streak"] + 1 if wallet["daily_claimed_at"] and (now.date() - wallet["daily_claimed_at"].date()) == timedelta(days=1) else 1
