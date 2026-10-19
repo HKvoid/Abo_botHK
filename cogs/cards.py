@@ -107,6 +107,77 @@ def character_stats_text(row) -> str:
     return "\n".join(f"**{str(key)[:80]}:** {str(value)[:300]}" for key, value in stats.items())
 
 
+COMBAT_STAT_KEYS = {
+    "HP", "ATK", "DEF", "Speed", "Clase", "Rol", "Tipo de daño",
+    "Habilidad", "Descripción de habilidad", "Daño de habilidad",
+    "Tipo de daño de habilidad", "Estado de habilidad",
+    "Duración de efecto de habilidad", "Probabilidad de efecto de habilidad",
+    "Pasiva", "Descripción de pasiva", "Daño de pasiva",
+    "Tipo de daño de pasiva", "Estado de pasiva",
+    "Duración de efecto de pasiva", "Probabilidad de efecto de pasiva",
+}
+
+
+def _combat_embed_fields(row):
+    """Devuelve los campos de combate con el formato visual de la ficha."""
+    stats = row.get("stats") or {}
+    if isinstance(stats, str):
+        try:
+            stats = __import__("json").loads(stats)
+        except Exception:
+            stats = {}
+    if not isinstance(stats, dict):
+        stats = {}
+
+    def value(key, fallback="—"):
+        raw = str(stats.get(key, "")).strip()
+        return raw[:300] if raw else fallback
+
+    fields = []
+    combat_values = (("❤️", "HP"), ("⚔️", "ATK"), ("🛡️", "DEF"), ("⚡", "Speed"))
+    if any(str(stats.get(key, "")).strip() for _, key in combat_values):
+        fields.append(("⚔️ Combate", "\u200b", False))
+        for emoji, key in combat_values:
+            fields.append((f"{emoji} {key}", value(key), True))
+        role = value("Rol", "Sin definir")
+        clase = value("Clase", "Sin definir")
+        damage_type = value("Tipo de daño", "Sin definir")
+        fields.append(("🎭 Rol y clase", f"**Rol:** {role} · **Clase:** {clase}\n**Daño básico:** {damage_type}", False))
+
+    ability = value("Habilidad", "")
+    if ability:
+        details = [f"**Daño:** {value('Daño de habilidad', '0')}"]
+        damage_type = value("Tipo de daño de habilidad", "")
+        effect = value("Estado de habilidad", "")
+        duration = value("Duración de efecto de habilidad", "")
+        chance = value("Probabilidad de efecto de habilidad", "")
+        if damage_type != "—": details.append(f"**Tipo:** {damage_type}")
+        if effect != "—": details.append(f"**Estado:** {effect}" + (f" ({duration} turnos)" if duration != "—" else ""))
+        if chance != "—": details.append(f"**Probabilidad:** {chance}%")
+        desc = value("Descripción de habilidad", "")
+        if desc: details.append(f"\n*{desc}*")
+        fields.append((f"✨ Habilidad — {ability}", " · ".join(details)[:1024], False))
+
+    passive = value("Pasiva", "")
+    if passive:
+        details = [f"**Daño:** {value('Daño de pasiva', '0')}"]
+        damage_type = value("Tipo de daño de pasiva", "")
+        effect = value("Estado de pasiva", "")
+        duration = value("Duración de efecto de pasiva", "")
+        chance = value("Probabilidad de efecto de pasiva", "")
+        if damage_type != "—": details.append(f"**Tipo:** {damage_type}")
+        if effect != "—": details.append(f"**Estado:** {effect}" + (f" ({duration} turnos)" if duration != "—" else ""))
+        if chance != "—": details.append(f"**Probabilidad:** {chance}%")
+        desc = value("Descripción de pasiva", "")
+        if desc: details.append(f"\n*{desc}*")
+        fields.append((f"🔥 Pasiva — {passive}", " · ".join(details)[:1024], False))
+
+    extra = [(str(key), str(val)) for key, val in stats.items() if key not in COMBAT_STAT_KEYS and str(val).strip()]
+    if extra:
+        fields.append(("📊 Stats extra", "\n".join(f"**{key}:** {val}" for key, val in extra)[:1024], False))
+    return fields
+
+
 async def ensure_card_catalog() -> None:
     rows = []
     for slug, name, rarity, image_file, weight, value in CATALOG:
@@ -644,13 +715,12 @@ class CardsCog(commands.Cog):
             return await interaction.response.send_message(embed=notice("Carta no encontrada", "Revisa el nombre en `/coleccion` o `/ranking_cartas`.", 0xED4245), ephemeral=True)
         owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"]) or 0
         description = row.get("description") or "Conoce a este personaje de Abo."
-        stats = character_stats_text(row)
         embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
         embed.add_field(name="Rareza", value=row["rarity"], inline=True)
         embed.add_field(name="Valor", value=f"{coins_text(row['base_value'])} Abo Coins", inline=True)
-        embed.add_field(name="Tu colección", value=f"×{owned}", inline=True)
-        if stats:
-            embed.add_field(name="Stats / características", value=stats[:1024], inline=False)
+        embed.add_field(name="Tienes", value=f"×{owned}", inline=True)
+        for field_name, field_value, inline in _combat_embed_fields(row):
+            embed.add_field(name=field_name, value=field_value, inline=inline)
         path = ASSET_DIR / row["image_file"]
         if row.get("image_data"):
             filename = row["image_file"] or f"{row['slug']}.png"
