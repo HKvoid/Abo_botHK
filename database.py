@@ -258,6 +258,36 @@ ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS confirmed_b BOOLEAN NOT
 CREATE INDEX IF NOT EXISTS idx_card_trade_sessions_active ON card_trade_sessions (guild_id, channel_id) WHERE status='active';
 CREATE INDEX IF NOT EXISTS idx_card_trade_sessions_guild ON card_trade_sessions (guild_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS card_battles (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
+    user_a BIGINT NOT NULL,
+    user_b BIGINT NOT NULL,
+    card_a TEXT NOT NULL REFERENCES card_catalog(slug),
+    card_b TEXT NOT NULL REFERENCES card_catalog(slug),
+    winner_id BIGINT,
+    loser_id BIGINT,
+    turns INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','cancelled')),
+    result JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_card_battles_guild_created ON card_battles (guild_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_card_battles_users ON card_battles (guild_id, user_a, user_b, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS card_battle_logs (
+    id BIGSERIAL PRIMARY KEY,
+    battle_id BIGINT NOT NULL REFERENCES card_battles(id) ON DELETE CASCADE,
+    turn_number INTEGER NOT NULL,
+    actor_id BIGINT NOT NULL,
+    action TEXT NOT NULL,
+    damage INTEGER NOT NULL DEFAULT 0,
+    effect TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     migration_key TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
