@@ -528,7 +528,10 @@ def stat_num(stats,key,default=0):
     return int(float(match.group(0))) if match else default
 
 def damage_num(value,default=0):
-    match=re.search(r"\d+(?:\.\d+)?",str(value or ""))
+    s=str(value or "")
+    rng=re.search(r"(\d+)\s*[-–]\s*(\d+)",s)
+    if rng: return random.randint(int(rng.group(1)),int(rng.group(2)))
+    match=re.search(r"\d+(?:\.\d+)?",s)
     return int(float(match.group(0))) if match else default
 
 def battle_line(player):
@@ -605,9 +608,12 @@ class BattleView(discord.ui.View):
         if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
         if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
         stats=combat_stats(session['players'][session['turn']]['card'])
-        if not any(str(stats.get("Habilidad" if n == 1 else f"Habilidad {n}", "")).strip() for n in range(1, 4)):
-            return await interaction.response.send_message("Esta carta no tiene habilidades configuradas.",ephemeral=True)
-        await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
+        available=[n for n in range(1,4) if str(stats.get("Habilidad" if n==1 else f"Habilidad {n}","")).strip()]
+        if not available: return await interaction.response.send_message("Esta carta no tiene habilidades configuradas.",ephemeral=True)
+        if len(available)==1:
+            await interaction.response.defer(); await self.cog.battle_action(interaction,self.key,f"ability:{available[0]}")
+        else:
+            await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
     @discord.ui.button(label="Defender",emoji="🛡️",style=discord.ButtonStyle.secondary)
     async def defend(self,interaction,button): await self.act(interaction,"defend")
     @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
@@ -1270,21 +1276,62 @@ class CardsCog(commands.Cog):
                 if not name or not damage: return await interaction.followup.send("Esta habilidad no tiene daño configurado.",ephemeral=True)
                 if actor['energy']<2: return await interaction.followup.send("Necesitas 2 ⚡ para usar la habilidad.",ephemeral=True)
                 actor['energy']-=2; label=f"✨ Habilidad {ability_number}: {name}"; effect=str(stats.get(f'Estado de habilidad{suffix}','')).strip(); chance=stat_num(stats,f'Probabilidad de efecto de habilidad{suffix}',0); duration=stat_num(stats,f'Duración de efecto de habilidad{suffix}',0)
+                damage_type=str(stats.get(f'Tipo de daño de habilidad{suffix}',stats.get('Tipo de daño','Físico'))).strip()
             else:
                 damage=max(1,stat_num(stats,'ATK',10)); label='⚔️ Ataque básico'; effect=''; chance=0; duration=0; actor['energy']=min(5,actor['energy']+1)
-            defense=stat_num(combat_stats(enemy['card']),'DEF',0); damage=max(1,damage-defense//2)
-            if enemy['defending']: damage=max(1,damage//2); enemy['defending']=False
+                damage_type=str(stats.get('Tipo de daño','Físico')).strip()
+            # ── Debilitado: reduce el ATK del actor un 30% ─────────────────────
+            if 'Debilitado' in actor['states'] and action!='ability':
+                damage=max(1,int(damage*0.7))
+            elif action.startswith('ability') and 'Debilitado' in actor['states']:
+                damage=max(1,int(damage*0.7))
+            # ── Lento: el actor pierde este turno (ya gastó energía/acción) ─────
+            if 'Lento' in actor['states']:
+                actor['states']['Lento']-=1
+                if actor['states']['Lento']<=0: del actor['states']['Lento']
+                session['turns']+=1; session['turn']=enemy_id
+                await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2",session['turns'],session['db_id'])
+                slow_msg=f"⚫ {actor['mention']} está **Lento** y pierde el turno."
+                await interaction.edit_original_response(embed=self.battle_embed(session,slow_msg),view=BattleView(self,key)); return
+            # ── Aplicar fórmula según tipo de daño ─────────────────────────────
+            enemy_stats=combat_stats(enemy['card']); defense=stat_num(enemy_stats,'DEF',0)
+            # ── Escudo: absorbe daño plano antes de aplicar el golpe ───────────
+            if 'Escudo' in enemy['states']:
+                shield_block=min(damage,10); damage=max(0,damage-shield_block)
+                enemy['states']['Escudo']-=1
+                if enemy['states']['Escudo']<=0: del enemy['states']['Escudo']
+            blocked=enemy['defending']
+            if damage_type=='Porcentual':
+                # % del HP máximo del enemigo, ignorando DEF y defensa activa
+                raw=max(1,round(enemy['max_hp']*damage/100))
+                damage=raw; blocked=False
+            elif damage_type=='Verdadero':
+                # Daño fijo, ignora DEF y defensa activa
+                damage=max(1,damage); blocked=False
+            elif damage_type=='Mágico':
+                # Ignora DEF pero sí reduce a la mitad si está defendiendo
+                damage=max(1,damage)
+                if blocked: damage=max(1,damage//2); enemy['defending']=False; blocked=False
+            else:
+                # Físico (default): ATK - DEF/2, se reduce también al defender
+                damage=max(1,damage-defense//2)
+                if blocked: damage=max(1,damage//2); enemy['defending']=False; blocked=False
+            if blocked: enemy['defending']=False
             enemy['hp']=max(0,enemy['hp']-damage); applied=''
             if effect in BATTLE_STATES and chance and random.randint(1,100)<=chance: enemy['states'][effect]=max(1,duration); applied=effect
-            message=f"{actor['mention']} usó **{label}** e hizo **{damage}** de daño"+(f" y aplicó **{applied}**." if applied else ".")
+            dmg_label={'Físico':'💢','Mágico':'✨','Verdadero':'⚡','Porcentual':'📊'}.get(damage_type,'')
+            message=f"{actor['mention']} usó **{label}** e hizo **{damage}** de daño {dmg_label}"+(f" y aplicó **{applied}**." if applied else ".")
             await db.execute("INSERT INTO card_battle_logs (battle_id,turn_number,actor_id,action,damage,effect) VALUES ($1,$2,$3,$4,$5,$6)",session['db_id'],session['turns']+1,actor['id'],label,damage,applied)
         session['turns']+=1
         if enemy['hp']<=0: return await self.end_battle(interaction,key,actor['id'],message+f"\n💥 {enemy['mention']} quedó fuera de combate.")
         for player in (actor,enemy):
             for state in list(player['states']):
                 if state in ('Quemadura','Veneno'): player['hp']=max(0,player['hp']-3)
-                player['states'][state]-=1
-                if player['states'][state]<=0: del player['states'][state]
+                elif state=='Regeneración': player['hp']=min(player['max_hp'],player['hp']+5)
+                # Escudo y Lento ya se decrementan inline; los demás (Debilitado, Silencio, Aturdimiento) solo duran
+                if state not in ('Escudo','Lento'):
+                    player['states'][state]-=1
+                    if player['states'][state]<=0: del player['states'][state]
         if enemy['hp']<=0: return await self.end_battle(interaction,key,actor['id'],message+"\n☠️ Un estado terminó el combate.")
         session['turn']=enemy_id
         await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2",session['turns'],session['db_id'])
