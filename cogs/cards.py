@@ -139,51 +139,104 @@ def _combat_embed_fields(row):
         raw = str(stats.get(key, "")).strip()
         return raw[:300] if raw else fallback
 
-    fields = []
-    combat_values = (("❤️", "HP"), ("⚔️", "ATK"), ("🛡️", "DEF"), ("⚡", "Speed"))
-    if any(str(stats.get(key, "")).strip() for _, key in combat_values):
-        fields.append(("⚔️ Combate", "\u200b", False))
-        for emoji, key in combat_values:
-            fields.append((f"{emoji} {key}", value(key), True))
-        role = value("Rol", "Sin definir")
-        clase = value("Clase", "Sin definir")
-        damage_type = value("Tipo de daño", "Sin definir")
-        fields.append(("🎭 Rol y clase", f"**Rol:** {role} · **Clase:** {clase}\n**Daño básico:** {damage_type}", False))
+    ABILITY_ICONS = ["✨", "💫", "🌀"]
+    EFFECT_ICONS = {
+        "Quemadura": "🔥", "Veneno": "☠️", "Aturdimiento": "⚡",
+        "Escudo": "🛡️", "Regeneración": "💚", "Silencio": "🔇",
+        "Debilitado": "⬇️", "Lento": "🐢",
+    }
+    TYPE_ICONS = {"Físico": "💢", "Mágico": "✨", "Verdadero": "⚡", "Porcentual": "📊"}
 
+    fields = []
+
+    # ── Combate: stats base en una sola fila compacta ──────────────────────────
+    combat_values = (("❤️", "HP"), ("⚔️", "ATK"), ("🛡️", "DEF"), ("⚡", "Speed"))
+    has_combat = any(str(stats.get(key, "")).strip() for _, key in combat_values)
+    if has_combat:
+        stat_line = "  ".join(
+            f"{emoji} **{value(key)}**" for emoji, key in combat_values
+            if str(stats.get(key, "")).strip()
+        )
+        role = value("Rol", "")
+        clase = value("Clase", "")
+        dmg_type = value("Tipo de daño", "")
+        role_parts = []
+        if role != "—": role_parts.append(f"🎭 {role}")
+        if clase != "—": role_parts.append(f"📚 {clase}")
+        if dmg_type != "—": role_parts.append(f"{TYPE_ICONS.get(dmg_type, '⚔️')} {dmg_type}")
+        combat_body = stat_line
+        if role_parts:
+            combat_body += "\n" + "  ·  ".join(role_parts)
+        fields.append(("⚔️ Stats de combate", combat_body[:1024], False))
+
+    # ── Habilidades 1-3 ────────────────────────────────────────────────────────
     for ability_number in range(1, 4):
         suffix = "" if ability_number == 1 else f" {ability_number}"
         ability = value(f"Habilidad{suffix}", "")
-        if not ability:
+        if not ability or ability == "—":
             continue
-        details = [f"**Daño:** {value(f'Daño de habilidad{suffix}', '0')}"]
-        damage_type = value(f"Tipo de daño de habilidad{suffix}", "")
+        icon = ABILITY_ICONS[ability_number - 1]
+        dmg = value(f"Daño de habilidad{suffix}", "")
+        dmg_type = value(f"Tipo de daño de habilidad{suffix}", "")
         effect = value(f"Estado de habilidad{suffix}", "")
         duration = value(f"Duración de efecto de habilidad{suffix}", "")
         chance = value(f"Probabilidad de efecto de habilidad{suffix}", "")
-        if damage_type != "—": details.append(f"**Tipo:** {damage_type}")
-        if effect != "—": details.append(f"**Estado:** {effect}" + (f" ({duration} turnos)" if duration != "—" else ""))
-        if chance != "—": details.append(f"**Probabilidad:** {chance}%")
         desc = value(f"Descripción de habilidad{suffix}", "")
-        if desc: details.append(f"\n*{desc}*")
-        fields.append((f"✨ Habilidad {ability_number} — {ability}", " · ".join(details)[:1024], False))
 
+        lines = []
+        # Primera línea: daño + tipo
+        dmg_parts = []
+        if dmg != "—": dmg_parts.append(f"💥 **{dmg}**")
+        if dmg_type != "—": dmg_parts.append(f"{TYPE_ICONS.get(dmg_type, '')} {dmg_type}")
+        if dmg_parts:
+            lines.append("  ·  ".join(dmg_parts))
+        # Segunda línea: estado/efecto
+        if effect != "—":
+            effect_icon = EFFECT_ICONS.get(effect, "🔸")
+            effect_str = f"{effect_icon} **{effect}**"
+            if duration != "—": effect_str += f" · {duration} turnos"
+            if chance != "—": effect_str += f" · {chance}% prob."
+            lines.append(effect_str)
+        # Descripción en cursiva
+        if desc != "—":
+            lines.append(f"*{desc}*")
+
+        field_value = "\n".join(lines) if lines else "—"
+        fields.append((f"{icon} Hab. {ability_number} — {ability}", field_value[:1024], False))
+
+    # ── Pasiva ─────────────────────────────────────────────────────────────────
     passive = value("Pasiva", "")
-    if passive:
-        details = [f"**Daño:** {value('Daño de pasiva', '0')}"]
-        damage_type = value("Tipo de daño de pasiva", "")
+    if passive and passive != "—":
+        dmg = value("Daño de pasiva", "")
+        dmg_type = value("Tipo de daño de pasiva", "")
         effect = value("Estado de pasiva", "")
         duration = value("Duración de efecto de pasiva", "")
         chance = value("Probabilidad de efecto de pasiva", "")
-        if damage_type != "—": details.append(f"**Tipo:** {damage_type}")
-        if effect != "—": details.append(f"**Estado:** {effect}" + (f" ({duration} turnos)" if duration != "—" else ""))
-        if chance != "—": details.append(f"**Probabilidad:** {chance}%")
         desc = value("Descripción de pasiva", "")
-        if desc: details.append(f"\n*{desc}*")
-        fields.append((f"🔥 Pasiva — {passive}", " · ".join(details)[:1024], False))
 
-    extra = [(str(key), str(val)) for key, val in stats.items() if key not in COMBAT_STAT_KEYS and str(val).strip()]
+        lines = []
+        dmg_parts = []
+        if dmg != "—": dmg_parts.append(f"💥 **{dmg}**")
+        if dmg_type != "—": dmg_parts.append(f"{TYPE_ICONS.get(dmg_type, '')} {dmg_type}")
+        if dmg_parts:
+            lines.append("  ·  ".join(dmg_parts))
+        if effect != "—":
+            effect_icon = EFFECT_ICONS.get(effect, "🔸")
+            effect_str = f"{effect_icon} **{effect}**"
+            if duration != "—": effect_str += f" · {duration} turnos"
+            if chance != "—": effect_str += f" · {chance}% prob."
+            lines.append(effect_str)
+        if desc != "—":
+            lines.append(f"*{desc}*")
+
+        field_value = "\n".join(lines) if lines else "—"
+        fields.append((f"🔥 Pasiva — {passive}", field_value[:1024], False))
+
+    # ── Stats extra (campos libres del JSON) ───────────────────────────────────
+    extra = [(str(k), str(v)) for k, v in stats.items() if k not in COMBAT_STAT_KEYS and str(v).strip()]
     if extra:
-        fields.append(("📊 Stats extra", "\n".join(f"**{key}:** {val}" for key, val in extra)[:1024], False))
+        fields.append(("📊 Stats extra", "\n".join(f"**{k}:** {v}" for k, v in extra)[:1024], False))
+
     return fields
 
 
@@ -944,12 +997,12 @@ class CardsCog(commands.Cog):
                 await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
             owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", message.guild.id, message.author.id, row["slug"]) or 0
             description = row.get("description") or "Conoce a este personaje de Abo."
-            stats = character_stats_text(row)
             embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
             embed.add_field(name="Rareza", value=row["rarity"], inline=True)
             embed.add_field(name="Valor", value=f"{coins_text(row['base_value'])} Abo Coins", inline=True)
             embed.add_field(name="Tu colección", value=f"×{owned}", inline=True)
-            if stats: embed.add_field(name="Stats / características", value=stats[:1024], inline=False)
+            for field_name, field_value, inline in _combat_embed_fields(row):
+                embed.add_field(name=field_name, value=field_value, inline=inline)
             path = ASSET_DIR / row["image_file"]
             if row.get("image_data"):
                 filename = row["image_file"] or f"{row['slug']}.png"; embed.set_image(url=f"attachment://{filename}"); await message.channel.send(embed=embed, file=discord.File(io.BytesIO(bytes(row["image_data"])), filename=filename))
