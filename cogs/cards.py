@@ -112,6 +112,12 @@ COMBAT_STAT_KEYS = {
     "Habilidad", "Descripción de habilidad", "Daño de habilidad",
     "Tipo de daño de habilidad", "Estado de habilidad",
     "Duración de efecto de habilidad", "Probabilidad de efecto de habilidad",
+    "Habilidad 2", "Descripción de habilidad 2", "Daño de habilidad 2",
+    "Tipo de daño de habilidad 2", "Estado de habilidad 2",
+    "Duración de efecto de habilidad 2", "Probabilidad de efecto de habilidad 2",
+    "Habilidad 3", "Descripción de habilidad 3", "Daño de habilidad 3",
+    "Tipo de daño de habilidad 3", "Estado de habilidad 3",
+    "Duración de efecto de habilidad 3", "Probabilidad de efecto de habilidad 3",
     "Pasiva", "Descripción de pasiva", "Daño de pasiva",
     "Tipo de daño de pasiva", "Estado de pasiva",
     "Duración de efecto de pasiva", "Probabilidad de efecto de pasiva",
@@ -144,19 +150,22 @@ def _combat_embed_fields(row):
         damage_type = value("Tipo de daño", "Sin definir")
         fields.append(("🎭 Rol y clase", f"**Rol:** {role} · **Clase:** {clase}\n**Daño básico:** {damage_type}", False))
 
-    ability = value("Habilidad", "")
-    if ability:
-        details = [f"**Daño:** {value('Daño de habilidad', '0')}"]
-        damage_type = value("Tipo de daño de habilidad", "")
-        effect = value("Estado de habilidad", "")
-        duration = value("Duración de efecto de habilidad", "")
-        chance = value("Probabilidad de efecto de habilidad", "")
+    for ability_number in range(1, 4):
+        suffix = "" if ability_number == 1 else f" {ability_number}"
+        ability = value(f"Habilidad{suffix}", "")
+        if not ability:
+            continue
+        details = [f"**Daño:** {value(f'Daño de habilidad{suffix}', '0')}"]
+        damage_type = value(f"Tipo de daño de habilidad{suffix}", "")
+        effect = value(f"Estado de habilidad{suffix}", "")
+        duration = value(f"Duración de efecto de habilidad{suffix}", "")
+        chance = value(f"Probabilidad de efecto de habilidad{suffix}", "")
         if damage_type != "—": details.append(f"**Tipo:** {damage_type}")
         if effect != "—": details.append(f"**Estado:** {effect}" + (f" ({duration} turnos)" if duration != "—" else ""))
         if chance != "—": details.append(f"**Probabilidad:** {chance}%")
-        desc = value("Descripción de habilidad", "")
+        desc = value(f"Descripción de habilidad{suffix}", "")
         if desc: details.append(f"\n*{desc}*")
-        fields.append((f"✨ Habilidad — {ability}", " · ".join(details)[:1024], False))
+        fields.append((f"✨ Habilidad {ability_number} — {ability}", " · ".join(details)[:1024], False))
 
     passive = value("Pasiva", "")
     if passive:
@@ -505,6 +514,28 @@ class BattleSetupView(discord.ui.View):
         super().__init__(timeout=120)
         for user_id,rows in choices: self.add_item(BattleChoice(cog,key,user_id,rows))
 
+class AbilityChoice(discord.ui.Select):
+    def __init__(self, cog, key, user_id, stats):
+        options=[]
+        for number in range(1,4):
+            suffix="" if number==1 else f" {number}"
+            name=str(stats.get(f"Habilidad{suffix}","")).strip()
+            if name:
+                options.append(discord.SelectOption(label=f"Habilidad {number}: {name}"[:100], value=str(number), description=f"Daño: {stats.get(f'Daño de habilidad{suffix}', '—')}"[:100]))
+        super().__init__(placeholder="Elige una habilidad...", options=options)
+        self.cog=cog; self.key=key; self.user_id=user_id
+    async def callback(self, interaction):
+        session=self.cog.battles.get(self.key)
+        if not session or interaction.user.id!=session['turn']:
+            return await interaction.response.send_message("No puedes elegir una habilidad en este momento.",ephemeral=True)
+        await interaction.response.defer()
+        await self.cog.battle_action(interaction,self.key,f"ability:{self.values[0]}")
+
+class AbilityChoiceView(discord.ui.View):
+    def __init__(self,cog,key,user_id,stats):
+        super().__init__(timeout=30)
+        self.add_item(AbilityChoice(cog,key,user_id,stats))
+
 class BattleView(discord.ui.View):
     def __init__(self,cog,key):
         super().__init__(timeout=45); self.cog=cog; self.key=key
@@ -516,7 +547,14 @@ class BattleView(discord.ui.View):
     @discord.ui.button(label="Ataque",emoji="⚔️",style=discord.ButtonStyle.primary)
     async def attack(self,interaction,button): await self.act(interaction,"attack")
     @discord.ui.button(label="Habilidad",emoji="✨",style=discord.ButtonStyle.success)
-    async def ability(self,interaction,button): await self.act(interaction,"ability")
+    async def ability(self,interaction,button):
+        session=self.cog.battles.get(self.key)
+        if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
+        if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
+        stats=combat_stats(session['players'][session['turn']]['card'])
+        if not any(str(stats.get("Habilidad" if n == 1 else f"Habilidad {n}", "")).strip() for n in range(1, 4)):
+            return await interaction.response.send_message("Esta carta no tiene habilidades configuradas.",ephemeral=True)
+        await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
     @discord.ui.button(label="Defender",emoji="🛡️",style=discord.ButtonStyle.secondary)
     async def defend(self,interaction,button): await self.act(interaction,"defend")
     @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
@@ -1171,11 +1209,14 @@ class CardsCog(commands.Cog):
         if action=='defend':
             actor['defending']=True; actor['energy']=min(5,actor['energy']+1); message=f"{actor['mention']} levantó la defensa y recuperó 1 ⚡."
         else:
-            if action=='ability':
-                name=str(stats.get('Habilidad','')).strip(); damage=damage_num(stats.get('Daño de habilidad'))
-                if not name or not damage: return await interaction.followup.send("Esta carta no tiene una habilidad con daño configurada.",ephemeral=True)
+            if action.startswith('ability'):
+                try: ability_number=int(action.split(':',1)[1]) if ':' in action else 1
+                except (ValueError, IndexError): ability_number=1
+                suffix='' if ability_number==1 else f' {ability_number}'
+                name=str(stats.get(f'Habilidad{suffix}','')).strip(); damage=damage_num(stats.get(f'Daño de habilidad{suffix}'))
+                if not name or not damage: return await interaction.followup.send("Esta habilidad no tiene daño configurado.",ephemeral=True)
                 if actor['energy']<2: return await interaction.followup.send("Necesitas 2 ⚡ para usar la habilidad.",ephemeral=True)
-                actor['energy']-=2; label=f"✨ {name}"; effect=str(stats.get('Estado de habilidad','')).strip(); chance=stat_num(stats,'Probabilidad de efecto de habilidad',0); duration=stat_num(stats,'Duración de efecto de habilidad',0)
+                actor['energy']-=2; label=f"✨ Habilidad {ability_number}: {name}"; effect=str(stats.get(f'Estado de habilidad{suffix}','')).strip(); chance=stat_num(stats,f'Probabilidad de efecto de habilidad{suffix}',0); duration=stat_num(stats,f'Duración de efecto de habilidad{suffix}',0)
             else:
                 damage=max(1,stat_num(stats,'ATK',10)); label='⚔️ Ataque básico'; effect=''; chance=0; duration=0; actor['energy']=min(5,actor['energy']+1)
             defense=stat_num(combat_stats(enemy['card']),'DEF',0); damage=max(1,damage-defense//2)
