@@ -264,8 +264,15 @@ async def ensure_card_catalog() -> None:
 
 
 def card_emoji(row) -> str:
-    if row.get("emoji_name") and row.get("emoji_id"):
-        return f"<:{row['emoji_name']}:{row['emoji_id']}>"
+    name = (row.get("emoji_name") or "").strip()
+    eid  = (row.get("emoji_id")   or "").strip()
+    if name and eid:
+        return f"<:{name}:{eid}>"
+    # Fallback: buscar en el dict hardcodeado por slug
+    slug = (row.get("slug") or "").strip()
+    if slug and slug in EMOJI_BY_SLUG:
+        fallback_name, fallback_id = EMOJI_BY_SLUG[slug]
+        return f"<:{fallback_name}:{fallback_id}>"
     return RARITY_EMOJI.get(row.get("rarity"), "🎴")
 
 
@@ -1274,7 +1281,9 @@ class CardsCog(commands.Cog):
                 suffix='' if ability_number==1 else f' {ability_number}'
                 name=str(stats.get(f'Habilidad{suffix}','')).strip(); damage=damage_num(stats.get(f'Daño de habilidad{suffix}'))
                 if not name or not damage: return await interaction.followup.send("Esta habilidad no tiene daño configurado.",ephemeral=True)
-                if actor['energy']<2: return await interaction.followup.send("Necesitas 2 ⚡ para usar la habilidad.",ephemeral=True)
+                if actor['energy']<2:
+                    await interaction.followup.send(f"Necesitas 2 ⚡ para usar la habilidad. Tienes {actor['energy']} ⚡ — ataca, defiéndete o ríndate.",ephemeral=True)
+                    await interaction.edit_original_response(embed=self.battle_embed(session,"⚡ Energía insuficiente para la habilidad."),view=BattleView(self,key)); return
                 actor['energy']-=2; label=f"✨ Habilidad {ability_number}: {name}"; effect=str(stats.get(f'Estado de habilidad{suffix}','')).strip(); chance=stat_num(stats,f'Probabilidad de efecto de habilidad{suffix}',0); duration=stat_num(stats,f'Duración de efecto de habilidad{suffix}',0)
                 damage_type=str(stats.get(f'Tipo de daño de habilidad{suffix}',stats.get('Tipo de daño','Físico'))).strip()
             else:
