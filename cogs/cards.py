@@ -610,7 +610,7 @@ class BattleView(discord.ui.View):
         turn_mention=f"<@{session['turn']}>"
         if session.get('db_id'):
             try:
-                await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",session['db_id'])
+                await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",session['db_id'])
             except Exception:
                 pass
         if self.message:
@@ -1257,7 +1257,7 @@ class CardsCog(commands.Cog):
             # Si la batalla activa no tiene BattleView vivo en memoria, está huérfana → limpiarla automáticamente
             live_keys=[k for k,s in self.battles.items() if s.get('db_id')==active['id']]
             if not live_keys:
-                await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",active['id'])
+                await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",active['id'])
             else:
                 return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo. Usa `/cancelar_pelea` si está atascada.",0xED4245),ephemeral=True)
         await interaction.response.send_message(embed=notice("⚔️ Desafío de pelea",f"{interaction.user.mention} desafió a {usuario.mention}.\n\nAcepten para elegir un personaje de su colección."),view=BattleChallengeView(self,interaction.guild_id,interaction.user.id,usuario.id))
@@ -1269,7 +1269,7 @@ class CardsCog(commands.Cog):
         row=await db.fetchrow("SELECT id,user_a,user_b FROM card_battles WHERE guild_id=$1 AND status='active' AND (user_a=$2 OR user_b=$2) LIMIT 1",interaction.guild_id,usuario.id)
         if not row:
             return await interaction.response.send_message(embed=notice("Sin pelea activa",f"{usuario.mention} no tiene ninguna pelea activa en la DB.",0xED4245),ephemeral=True)
-        await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",row['id'])
+        await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",row['id'])
         # Limpiar de memoria si existe
         dead=[k for k,s in self.battles.items() if s.get('db_id')==row['id']]
         for k in dead: self.battles.pop(k,None)
