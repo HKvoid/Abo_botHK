@@ -1253,8 +1253,27 @@ class CardsCog(commands.Cog):
         if usuario.bot or usuario.id == interaction.user.id:
             return await interaction.response.send_message(embed=notice("Desafío inválido","Elige a otro usuario que no sea un bot.",0xED4245),ephemeral=True)
         active=await db.fetchrow("SELECT id FROM card_battles WHERE guild_id=$1 AND status='active' AND (user_a IN ($2,$3) OR user_b IN ($2,$3)) LIMIT 1",interaction.guild_id,interaction.user.id,usuario.id)
-        if active: return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo.",0xED4245),ephemeral=True)
+        if active:
+            # Si la batalla activa no tiene BattleView vivo en memoria, está huérfana → limpiarla automáticamente
+            live_keys=[k for k,s in self.battles.items() if s.get('db_id')==active['id']]
+            if not live_keys:
+                await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",active['id'])
+            else:
+                return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo. Usa `/cancelar_pelea` si está atascada.",0xED4245),ephemeral=True)
         await interaction.response.send_message(embed=notice("⚔️ Desafío de pelea",f"{interaction.user.mention} desafió a {usuario.mention}.\n\nAcepten para elegir un personaje de su colección."),view=BattleChallengeView(self,interaction.guild_id,interaction.user.id,usuario.id))
+
+    @app_commands.command(name="cancelar_pelea", description="Cancela una pelea atascada de un usuario")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def cancelar_pelea(self, interaction: discord.Interaction, usuario: discord.Member):
+        row=await db.fetchrow("SELECT id,user_a,user_b FROM card_battles WHERE guild_id=$1 AND status='active' AND (user_a=$2 OR user_b=$2) LIMIT 1",interaction.guild_id,usuario.id)
+        if not row:
+            return await interaction.response.send_message(embed=notice("Sin pelea activa",f"{usuario.mention} no tiene ninguna pelea activa en la DB.",0xED4245),ephemeral=True)
+        await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",row['id'])
+        # Limpiar de memoria si existe
+        dead=[k for k,s in self.battles.items() if s.get('db_id')==row['id']]
+        for k in dead: self.battles.pop(k,None)
+        await interaction.response.send_message(embed=notice("Pelea cancelada 🏳️",f"La pelea activa de {usuario.mention} fue cancelada. Ambos jugadores pueden volver a pelear."),ephemeral=True)
 
     async def prepare_battle(self,interaction,guild_id,user_a,user_b):
         choices=[]
