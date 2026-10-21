@@ -599,9 +599,30 @@ class AbilityChoiceView(discord.ui.View):
         super().__init__(timeout=30)
         self.add_item(AbilityChoice(cog,key,user_id,stats))
 
+BATTLE_TURN_TIMEOUT = 90  # segundos sin acción antes de anular la pelea
+
 class BattleView(discord.ui.View):
     def __init__(self,cog,key):
-        super().__init__(timeout=45); self.cog=cog; self.key=key
+        super().__init__(timeout=BATTLE_TURN_TIMEOUT); self.cog=cog; self.key=key; self.message=None
+    async def on_timeout(self):
+        session=self.cog.battles.pop(self.key,None)
+        if not session: return
+        turn_mention=f"<@{session['turn']}>"
+        if session.get('db_id'):
+            try:
+                await db.execute("UPDATE card_battles SET status='abandoned',completed_at=NOW() WHERE id=$1",session['db_id'])
+            except Exception:
+                pass
+        if self.message:
+            try:
+                p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
+                embed=notice("⚔️ Pelea carta contra carta",
+                    f"⏰ Pelea anulada por inactividad.\n{turn_mention} no actuó a tiempo.\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",
+                    0x95A5A6)
+                embed.add_field(name="Resultado",value="Anulada · Sin ganador",inline=False)
+                await self.message.edit(embed=embed,view=None)
+            except Exception:
+                pass
     async def act(self,interaction,action):
         session=self.cog.battles.get(self.key)
         if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
@@ -1258,7 +1279,7 @@ class CardsCog(commands.Cog):
         session.update({'started':True,'players':players,'turn':turn,'turns':0})
         rows=[players[x]['card'] for x in session['users']]
         session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],rows[0]['slug'],rows[1]['slug'])
-        await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! ⚔️"),view=BattleView(self,key))
+        view=BattleView(self,key); await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! ⚔️"),view=view); view.message=interaction.message
 
     def battle_embed(self,session,message):
         p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
@@ -1344,7 +1365,7 @@ class CardsCog(commands.Cog):
         if enemy['hp']<=0: return await self.end_battle(interaction,key,actor['id'],message+"\n☠️ Un estado terminó el combate.")
         session['turn']=enemy_id
         await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2",session['turns'],session['db_id'])
-        await interaction.edit_original_response(embed=self.battle_embed(session,message),view=BattleView(self,key))
+        view=BattleView(self,key); msg=await interaction.edit_original_response(embed=self.battle_embed(session,message),view=view); view.message=msg
 
     async def end_battle(self,interaction,key,winner_id,message):
         session=self.battles.get(key)
