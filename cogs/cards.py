@@ -48,8 +48,8 @@ EMOJI_BY_SLUG = {
     "empanizabo": ("EMPANIZABO", "1560744199622492221"),
     "aspirabo": ("ASPIRABO", "1560744183818625114"),
     "asesinabo": ("ASESINABO", "1560744167158579270"),
-    "glotonabo": ("GLOTONABO", "1560743883690054234"),
-    "sueterabo": ("SUETERABO", "1560743813142679683"),
+    "glotonabo": ("GLOTONABO", "1560743838690054234"),
+    "sueterabo": ("SUTERABO",  "1560743813142679683"),
     "tacosabo": ("TACOSABO", "1560743787309965393"),
     "starabo": ("STARABO", "1560743769433841665"),
     "sopabo": ("SOPABO", "1560743747933704192"),
@@ -599,7 +599,7 @@ class AbilityChoiceView(discord.ui.View):
         super().__init__(timeout=30)
         self.add_item(AbilityChoice(cog,key,user_id,stats))
 
-BATTLE_TURN_TIMEOUT = 360 # segundos sin acción antes de anular la pelea
+BATTLE_TURN_TIMEOUT = 90  # segundos sin acción antes de anular la pelea
 
 class BattleView(discord.ui.View):
     def __init__(self,cog,key):
