@@ -657,65 +657,26 @@ class BattleView(discord.ui.View):
     async def surrender(self,interaction,button): await self.act(interaction,"surrender")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# WISHLIST
+# COMPARAR COLECCIONES
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def wishlist_add(guild_id: int, user_id: int, slug: str) -> bool:
-    """Añade una carta a la wishlist. Devuelve True si fue añadida, False si ya existía."""
-    result = await db.execute(
-        "INSERT INTO card_wishlist (guild_id,user_id,card_slug) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
-        guild_id, user_id, slug,
-    )
-    return result.endswith("1")
-
-
-async def wishlist_remove(guild_id: int, user_id: int, slug: str) -> bool:
-    result = await db.execute(
-        "DELETE FROM card_wishlist WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
-        guild_id, user_id, slug,
-    )
-    return result.endswith("1")
-
-
-async def wishlist_rows(guild_id: int, user_id: int):
-    return await db.fetch(
-        """SELECT c.slug,c.name,c.rarity,c.emoji_name,c.emoji_id,
-                  COALESCE(i.quantity,0)::int AS quantity, c.base_value
-           FROM card_wishlist w
-           JOIN card_catalog c ON c.slug=w.card_slug
-           LEFT JOIN card_inventory i ON i.guild_id=w.guild_id AND i.user_id=w.user_id AND i.card_slug=c.slug
-           WHERE w.guild_id=$1 AND w.user_id=$2
-           ORDER BY c.rarity DESC, c.name""",
-        guild_id, user_id,
-    )
-
-
-async def notify_wishlist(bot: commands.Bot, guild_id: int, seller_id: int, slug: str):
-    """Avisa a quienes tienen la carta en wishlist cuando alguien la pone en el mercado."""
+async def compare_collections(guild_id: int, user_a: int, user_b: int):
+    """Devuelve (solo_a, solo_b, ambos) con filas de card_catalog."""
     rows = await db.fetch(
-        "SELECT user_id FROM card_wishlist WHERE guild_id=$1 AND card_slug=$2 AND user_id!=$3",
-        guild_id, slug, seller_id,
+        """SELECT c.slug, c.name, c.rarity, c.emoji_name, c.emoji_id,
+                  COALESCE(a.quantity, 0)::int AS qty_a,
+                  COALESCE(b.quantity, 0)::int AS qty_b
+           FROM card_catalog c
+           LEFT JOIN card_inventory a ON a.card_slug=c.slug AND a.guild_id=$1 AND a.user_id=$2 AND a.quantity>0
+           LEFT JOIN card_inventory b ON b.card_slug=c.slug AND b.guild_id=$1 AND b.user_id=$3 AND b.quantity>0
+           WHERE c.active=TRUE
+           ORDER BY c.rarity DESC, c.name""",
+        guild_id, user_a, user_b,
     )
-    if not rows:
-        return
-    guild = bot.get_guild(guild_id)
-    if not guild:
-        return
-    card = await card_row(slug)
-    if not card:
-        return
-    for row in rows:
-        member = guild.get_member(row["user_id"])
-        if member:
-            try:
-                await member.send(embed=notice(
-                    "¡Carta en tu wishlist disponible! 🔔",
-                    f"{card_emoji(card)} **{card['name']}** acaba de aparecer en el mercado del servidor **{guild.name}**.\n"
-                    f"Usa `!mercado` o `/mercado_comprar` para conseguirla.",
-                    0xF1C40F,
-                ))
-            except discord.Forbidden:
-                pass
+    solo_a = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] == 0]
+    solo_b = [r for r in rows if r["qty_b"] > 0 and r["qty_a"] == 0]
+    ambos  = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] > 0]
+    return solo_a, solo_b, ambos
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -968,63 +929,37 @@ class CardsCog(commands.Cog):
         if target.display_avatar: embed.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
-    # ── WISHLIST ──────────────────────────────────────────────────────────────
+    # ── COMPARAR ──────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="wishlist", description="Gestiona tu lista de cartas deseadas")
+    @app_commands.command(name="comparar", description="Compara tu colección con la de otro miembro")
     @app_commands.guild_only()
-    @app_commands.describe(
-        accion="Ver tu lista, añadir o quitar una carta",
-        carta="Nombre de la carta (solo para añadir/quitar)",
-    )
-    @app_commands.choices(accion=[
-        app_commands.Choice(name="ver", value="ver"),
-        app_commands.Choice(name="añadir", value="añadir"),
-        app_commands.Choice(name="quitar", value="quitar"),
-    ])
-    async def wishlist_cmd(self, interaction: discord.Interaction,
-                           accion: str = "ver", carta: str = ""):
-        gid, uid = interaction.guild_id, interaction.user.id
+    @app_commands.describe(usuario="Miembro con quien comparar")
+    async def comparar_cmd(self, interaction: discord.Interaction, usuario: discord.Member):
+        if usuario.bot or usuario.id == interaction.user.id:
+            return await interaction.response.send_message(
+                embed=notice("Comparación inválida", "Elige a otro miembro del servidor.", 0xED4245),
+                ephemeral=True,
+            )
+        gid = interaction.guild_id
+        solo_yo, solo_el, ambos = await compare_collections(gid, interaction.user.id, usuario.id)
 
-        if accion == "ver":
-            rows = await wishlist_rows(gid, uid)
+        def fmt(rows, limit=15):
             if not rows:
-                return await interaction.response.send_message(
-                    embed=notice("Tu Wishlist 🌟", "Está vacía. Usa `/wishlist añadir <carta>` para agregar cartas.", 0x5865F2),
-                    ephemeral=True,
-                )
-            lines = []
-            for r in rows:
-                owned = f"✅ ×{r['quantity']}" if r["quantity"] > 0 else "❌"
-                lines.append(f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · {owned}")
-            return await interaction.response.send_message(
-                embed=notice("Tu Wishlist 🌟", "\n".join(lines)),
-                ephemeral=True,
-            )
+                return "—"
+            lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']}" for r in rows[:limit]]
+            if len(rows) > limit:
+                lines.append(f"*…y {len(rows) - limit} más*")
+            return "\n".join(lines)
 
-        if not carta:
-            return await interaction.response.send_message(
-                embed=notice("Falta el nombre", "Indica una carta. Ejemplo: `/wishlist añadir Mielabo`.", 0xFEE75C),
-                ephemeral=True,
-            )
-
-        row = await card_row(carta)
-        if not row:
-            return await interaction.response.send_message(
-                embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245),
-                ephemeral=True,
-            )
-
-        if accion == "añadir":
-            added = await wishlist_add(gid, uid, row["slug"])
-            msg = (f"{card_emoji(row)} **{row['name']}** añadida a tu wishlist. Te avisaré por DM si aparece en el mercado. 🔔"
-                   if added else f"**{row['name']}** ya estaba en tu wishlist.")
-            return await interaction.response.send_message(embed=notice("Wishlist 🌟", msg), ephemeral=True)
-
-        if accion == "quitar":
-            removed = await wishlist_remove(gid, uid, row["slug"])
-            msg = (f"{card_emoji(row)} **{row['name']}** eliminada de tu wishlist."
-                   if removed else f"**{row['name']}** no estaba en tu wishlist.")
-            return await interaction.response.send_message(embed=notice("Wishlist 🌟", msg), ephemeral=True)
+        embed = notice(
+            f"Comparación: {interaction.user.display_name} vs {usuario.display_name} 🔍",
+            f"Únicas tuyas: **{len(solo_yo)}** · Únicas de {usuario.display_name}: **{len(solo_el)}** · En común: **{len(ambos)}**",
+            0x5865F2,
+        )
+        embed.add_field(name=f"Solo tú tienes ({len(solo_yo)})", value=fmt(solo_yo), inline=False)
+        embed.add_field(name=f"Solo {usuario.display_name} tiene ({len(solo_el)})", value=fmt(solo_el), inline=False)
+        embed.add_field(name=f"Ambos tienen ({len(ambos)})", value=fmt(ambos), inline=False)
+        await interaction.response.send_message(embed=embed)
 
     # ── FUSIÓN ────────────────────────────────────────────────────────────────
 
@@ -1400,48 +1335,35 @@ class CardsCog(commands.Cog):
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
             "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets", "profile": "perfil",
-            "wl": "wishlist",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas", "wishlist"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas", "comparar"}
         if command not in quick:
             return False
         if command == "ayudacartas":
-            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario` · `!wishlist [añadir|quitar <carta>]`\n\nPara fusionar, evolucionar o publicar en el mercado usa los comandos `/fusion`, `/evolucionar` y `/mercado_*`."))
+            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario` · `!comparar @usuario`\n\nPara fusionar, evolucionar o publicar en el mercado usa los comandos `/fusion`, `/evolucionar` y `/mercado_*`."))
             return True
-        if command == "wishlist":
-            gid, uid = message.guild.id, message.author.id
-            parts_w = argument.split(None, 1)
-            accion_w = parts_w[0].lower() if parts_w else "ver"
-            carta_w  = parts_w[1].strip() if len(parts_w) > 1 else ""
-            if accion_w == "ver" or not accion_w:
-                rows = await wishlist_rows(gid, uid)
-                if not rows:
-                    await message.channel.send(embed=notice("Tu Wishlist 🌟", "Está vacía. Usa `!wishlist añadir <carta>` para agregar cartas.", 0x5865F2))
-                    return True
-                lines = []
-                for r in rows:
-                    owned = f"✅ ×{r['quantity']}" if r["quantity"] > 0 else "❌"
-                    lines.append(f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · {owned}")
-                await message.channel.send(embed=notice("Tu Wishlist 🌟", "\n".join(lines)))
+        if command == "comparar":
+            target = message.mentions[0] if message.mentions else None
+            if not target or target.bot or target.id == message.author.id:
+                await message.channel.send(embed=notice("Uso de !comparar", "Menciona a otro miembro: `!comparar @usuario`.", 0xFEE75C))
                 return True
-            if accion_w in {"añadir", "add", "agregar"} and carta_w:
-                row = await card_row(carta_w)
-                if not row:
-                    await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
-                added = await wishlist_add(gid, uid, row["slug"])
-                msg = (f"{card_emoji(row)} **{row['name']}** añadida a tu wishlist. Te avisaré por DM si aparece en el mercado. 🔔"
-                       if added else f"**{row['name']}** ya estaba en tu wishlist.")
-                await message.channel.send(embed=notice("Wishlist 🌟", msg)); return True
-            if accion_w in {"quitar", "remove", "eliminar"} and carta_w:
-                row = await card_row(carta_w)
-                if not row:
-                    await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
-                removed = await wishlist_remove(gid, uid, row["slug"])
-                msg = (f"{card_emoji(row)} **{row['name']}** eliminada de tu wishlist."
-                       if removed else f"**{row['name']}** no estaba en tu wishlist.")
-                await message.channel.send(embed=notice("Wishlist 🌟", msg)); return True
-            await message.channel.send(embed=notice("Uso de !wishlist", "`!wishlist` · `!wishlist añadir <carta>` · `!wishlist quitar <carta>`\nAtajo: `!wl`", 0xFEE75C))
+            gid = message.guild.id
+            solo_yo, solo_el, ambos = await compare_collections(gid, message.author.id, target.id)
+            def fmt(rows, limit=15):
+                if not rows: return "—"
+                lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']}" for r in rows[:limit]]
+                if len(rows) > limit: lines.append(f"*…y {len(rows) - limit} más*")
+                return "\n".join(lines)
+            embed = notice(
+                f"Comparación: {message.author.display_name} vs {target.display_name} 🔍",
+                f"Únicas tuyas: **{len(solo_yo)}** · Únicas de {target.display_name}: **{len(solo_el)}** · En común: **{len(ambos)}**",
+                0x5865F2,
+            )
+            embed.add_field(name=f"Solo tú tienes ({len(solo_yo)})", value=fmt(solo_yo), inline=False)
+            embed.add_field(name=f"Solo {target.display_name} tiene ({len(solo_el)})", value=fmt(solo_el), inline=False)
+            embed.add_field(name=f"Ambos tienen ({len(ambos)})", value=fmt(ambos), inline=False)
+            await message.channel.send(embed=embed)
             return True
         if command == "tradeo":
             target = message.mentions[0] if message.mentions else None
@@ -1722,8 +1644,6 @@ class CardsCog(commands.Cog):
                 await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad, interaction.guild_id, interaction.user.id, row["slug"])
                 listing = await connection.fetchrow("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5) RETURNING id", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
         await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una.\nID de publicación: **#{listing['id']}**"), ephemeral=True)
-        # Notificar a quienes tienen esta carta en su wishlist
-        self.bot.loop.create_task(notify_wishlist(self.bot, interaction.guild_id, interaction.user.id, row["slug"]))
 
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
