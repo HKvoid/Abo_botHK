@@ -75,9 +75,9 @@ CATALOG = [
     ("starabo", "Starabo", "Legendaria", "starabo.png", 4, 1000),
     ("sueterabo", "Suéterabo", "Rara", "sueterabo.png", 22, 250),
     ("tacosabo", "Tacosabo", "Común", "tacosabo.png", 42, 100),
-    ("abojama", "Abojama", "Común", "abojama.jpg", 42, 100),
-    ("abomaid", "Abomaid", "Rara", "abomaid.jpg", 22, 250),
-    ("abosaurio", "Abosaurio", "Épica", "abosaurio.jpg", 10, 500),
+    ("abojama", "Abojama", "Común", "abojama.png", 42, 100),
+    ("abomaid", "Abomaid", "Rara", "abomaid.png", 22, 250),
+    ("abosaurio", "Abosaurio", "Épica", "abosaurio.png", 10, 500),
 ]
 
 
