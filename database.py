@@ -295,11 +295,23 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 -- Evoluciones: vincula una carta base con su forma evolucionada
 CREATE TABLE IF NOT EXISTS card_evolutions (
-    base_slug    TEXT PRIMARY KEY REFERENCES card_catalog(slug),
-    evolved_slug TEXT NOT NULL REFERENCES card_catalog(slug),
-    cost_coins   INTEGER NOT NULL DEFAULT 0,
-    cost_copies  INTEGER NOT NULL DEFAULT 3,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    base_slug      TEXT PRIMARY KEY REFERENCES card_catalog(slug),
+    cost_coins     INTEGER NOT NULL DEFAULT 100,
+    cost_copies    INTEGER NOT NULL DEFAULT 2,
+    stat_boost_pct INTEGER NOT NULL DEFAULT 25,
+    max_level      INTEGER NOT NULL DEFAULT 5,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Migración: quitar columna evolved_slug si existía de versión anterior
+-- (se ejecuta sin error aunque ya no exista)
+
+CREATE TABLE IF NOT EXISTS card_inventory_evo (
+    guild_id       BIGINT NOT NULL,
+    user_id        BIGINT NOT NULL,
+    card_slug      TEXT NOT NULL REFERENCES card_catalog(slug),
+    evo_level      INTEGER NOT NULL DEFAULT 0,
+    stat_boost_pct INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id, card_slug)
 );
 """
 
