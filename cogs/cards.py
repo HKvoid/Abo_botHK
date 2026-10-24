@@ -37,6 +37,13 @@ RARITY_META = {
     "Legendaria": (0xF1C40F, 1000),
 }
 
+# Fusión: cuántas copias se necesitan para obtener la rareza superior
+FUSION_RULES = {
+    "Común":     {"copies": 3, "cost": 50,  "result": "Rara"},
+    "Rara":      {"copies": 3, "cost": 150, "result": "Épica"},
+    "Épica":     {"copies": 3, "cost": 300, "result": "Legendaria"},
+}
+
 # El catálogo inicial usa las cartas entregadas por el usuario.
 EMOJI_BY_SLUG = {
     "mielabo": ("MIELABO", "1560744239107940422"),
@@ -649,6 +656,235 @@ class BattleView(discord.ui.View):
     @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
     async def surrender(self,interaction,button): await self.act(interaction,"surrender")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WISHLIST
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def wishlist_add(guild_id: int, user_id: int, slug: str) -> bool:
+    """Añade una carta a la wishlist. Devuelve True si fue añadida, False si ya existía."""
+    result = await db.execute(
+        "INSERT INTO card_wishlist (guild_id,user_id,card_slug) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+        guild_id, user_id, slug,
+    )
+    return result.endswith("1")
+
+
+async def wishlist_remove(guild_id: int, user_id: int, slug: str) -> bool:
+    result = await db.execute(
+        "DELETE FROM card_wishlist WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
+        guild_id, user_id, slug,
+    )
+    return result.endswith("1")
+
+
+async def wishlist_rows(guild_id: int, user_id: int):
+    return await db.fetch(
+        """SELECT c.slug,c.name,c.rarity,c.emoji_name,c.emoji_id,
+                  COALESCE(i.quantity,0)::int AS quantity, c.base_value
+           FROM card_wishlist w
+           JOIN card_catalog c ON c.slug=w.card_slug
+           LEFT JOIN card_inventory i ON i.guild_id=w.guild_id AND i.user_id=w.user_id AND i.card_slug=c.slug
+           WHERE w.guild_id=$1 AND w.user_id=$2
+           ORDER BY c.rarity DESC, c.name""",
+        guild_id, user_id,
+    )
+
+
+async def notify_wishlist(bot: commands.Bot, guild_id: int, seller_id: int, slug: str):
+    """Avisa a quienes tienen la carta en wishlist cuando alguien la pone en el mercado."""
+    rows = await db.fetch(
+        "SELECT user_id FROM card_wishlist WHERE guild_id=$1 AND card_slug=$2 AND user_id!=$3",
+        guild_id, slug, seller_id,
+    )
+    if not rows:
+        return
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    card = await card_row(slug)
+    if not card:
+        return
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if member:
+            try:
+                await member.send(embed=notice(
+                    "¡Carta en tu wishlist disponible! 🔔",
+                    f"{card_emoji(card)} **{card['name']}** acaba de aparecer en el mercado del servidor **{guild.name}**.\n"
+                    f"Usa `!mercado` o `/mercado_comprar` para conseguirla.",
+                    0xF1C40F,
+                ))
+            except discord.Forbidden:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUSIÓN
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FusionConfirmView(discord.ui.View):
+    """Botones de confirmación para la fusión."""
+
+    def __init__(self, guild_id: int, user_id: int, card_row_data, result_slug: str,
+                 result_row, copies: int, cost: int):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.card_row_data = card_row_data
+        self.result_slug = result_slug
+        self.result_row = result_row
+        self.copies = copies
+        self.cost = cost
+        self.done = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Solo tú puedes confirmar esta fusión.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Fusionar ✨", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.done:
+            return
+        self.done = True
+        self.stop()
+
+        async with db._pool().acquire() as conn:
+            async with conn.transaction():
+                inv = await conn.fetchrow(
+                    "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                    self.guild_id, self.user_id, self.card_row_data["slug"],
+                )
+                wallet = await conn.fetchrow(
+                    "SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
+                    self.guild_id, self.user_id,
+                )
+                if not inv or inv["quantity"] < self.copies:
+                    return await interaction.response.edit_message(
+                        embed=notice("Fusión cancelada ❌", f"Ya no tienes suficientes copias de **{self.card_row_data['name']}**.", 0xED4245),
+                        view=None,
+                    )
+                if not wallet or wallet["coins"] < self.cost:
+                    return await interaction.response.edit_message(
+                        embed=notice("Fusión cancelada ❌", f"No tienes suficientes Abo Coins (necesitas **{coins_text(self.cost)}**).", 0xED4245),
+                        view=None,
+                    )
+                await conn.execute(
+                    "UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4",
+                    self.copies, self.guild_id, self.user_id, self.card_row_data["slug"],
+                )
+                await conn.execute(
+                    "UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",
+                    self.cost, self.guild_id, self.user_id,
+                )
+                await add_card(conn, self.guild_id, self.user_id, self.result_slug)
+
+        await interaction.response.edit_message(
+            embed=notice(
+                "¡Fusión exitosa! ✨",
+                f"Combinaste **×{self.copies} {card_emoji(self.card_row_data)} {self.card_row_data['name']}** "
+                f"y gastaste **{coins_text(self.cost)} Abo Coins**.\n\n"
+                f"¡Obtuviste {card_emoji(self.result_row)} **{self.result_row['name']}**! ({self.result_row['rarity']})",
+                rarity_color(self.result_row["rarity"]),
+            ),
+            view=None,
+        )
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(
+            embed=notice("Fusión cancelada", "No se realizó ningún cambio.", 0x95A5A6),
+            view=None,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVOLUCIÓN
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EvolveConfirmView(discord.ui.View):
+    """Botones de confirmación para la evolución de una carta."""
+
+    def __init__(self, guild_id: int, user_id: int, base_row, evolved_row,
+                 cost_coins: int, cost_copies: int):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.base_row = base_row
+        self.evolved_row = evolved_row
+        self.cost_coins = cost_coins
+        self.cost_copies = cost_copies
+        self.done = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Solo tú puedes confirmar esta evolución.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Evolucionar 🌟", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.done:
+            return
+        self.done = True
+        self.stop()
+
+        async with db._pool().acquire() as conn:
+            async with conn.transaction():
+                inv = await conn.fetchrow(
+                    "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                    self.guild_id, self.user_id, self.base_row["slug"],
+                )
+                wallet = await conn.fetchrow(
+                    "SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
+                    self.guild_id, self.user_id,
+                )
+                if not inv or inv["quantity"] < self.cost_copies:
+                    return await interaction.response.edit_message(
+                        embed=notice("Evolución cancelada ❌",
+                                     f"Ya no tienes **×{self.cost_copies}** copias de **{self.base_row['name']}**.", 0xED4245),
+                        view=None,
+                    )
+                if not wallet or wallet["coins"] < self.cost_coins:
+                    return await interaction.response.edit_message(
+                        embed=notice("Evolución cancelada ❌",
+                                     f"No tienes suficientes Abo Coins (necesitas **{coins_text(self.cost_coins)}**).", 0xED4245),
+                        view=None,
+                    )
+                await conn.execute(
+                    "UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4",
+                    self.cost_copies, self.guild_id, self.user_id, self.base_row["slug"],
+                )
+                await conn.execute(
+                    "UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",
+                    self.cost_coins, self.guild_id, self.user_id,
+                )
+                await add_card(conn, self.guild_id, self.user_id, self.evolved_row["slug"])
+
+        await interaction.response.edit_message(
+            embed=notice(
+                "¡Evolución completada! 🌟",
+                f"{card_emoji(self.base_row)} **{self.base_row['name']}** evolucionó a "
+                f"{card_emoji(self.evolved_row)} **{self.evolved_row['name']}** ({self.evolved_row['rarity']}).\n\n"
+                f"Se consumieron **×{self.cost_copies}** copias y **{coins_text(self.cost_coins)} Abo Coins**.",
+                rarity_color(self.evolved_row["rarity"]),
+            ),
+            view=None,
+        )
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(
+            embed=notice("Evolución cancelada", "No se realizó ningún cambio.", 0x95A5A6),
+            view=None,
+        )
+
+
 class CardsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -731,6 +967,267 @@ class CardsCog(commands.Cog):
         embed = notice(f"Perfil de {target.display_name} 🪪", f"Nivel: **{wallet['level']}** · XP: **{wallet['xp']}/ {(wallet['level'])*1000}**\nSaldo: **{coins_text(wallet['coins'])} Abo Coins**\n\nCartas únicas: **{stats['unique_cards']}**\nCartas totales: **{stats['total_cards']}**\nValor de colección: **{coins_text(stats['value'])}**\nPosición: **#{rank}**\n\nSobres abiertos: **{wallet['packs_opened']}**\nPity rara: **{wallet['pity_rare']}/{PITY_RARE_LIMIT}**\nPity épica: **{wallet['pity_epic']}/{PITY_EPIC_LIMIT}**", 0x5865F2)
         if target.display_avatar: embed.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=embed)
+
+    # ── WISHLIST ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="wishlist", description="Gestiona tu lista de cartas deseadas")
+    @app_commands.guild_only()
+    @app_commands.describe(
+        accion="Ver tu lista, añadir o quitar una carta",
+        carta="Nombre de la carta (solo para añadir/quitar)",
+    )
+    @app_commands.choices(accion=[
+        app_commands.Choice(name="ver", value="ver"),
+        app_commands.Choice(name="añadir", value="añadir"),
+        app_commands.Choice(name="quitar", value="quitar"),
+    ])
+    async def wishlist_cmd(self, interaction: discord.Interaction,
+                           accion: str = "ver", carta: str = ""):
+        gid, uid = interaction.guild_id, interaction.user.id
+
+        if accion == "ver":
+            rows = await wishlist_rows(gid, uid)
+            if not rows:
+                return await interaction.response.send_message(
+                    embed=notice("Tu Wishlist 🌟", "Está vacía. Usa `/wishlist añadir <carta>` para agregar cartas.", 0x5865F2),
+                    ephemeral=True,
+                )
+            lines = []
+            for r in rows:
+                owned = f"✅ ×{r['quantity']}" if r["quantity"] > 0 else "❌"
+                lines.append(f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · {owned}")
+            return await interaction.response.send_message(
+                embed=notice("Tu Wishlist 🌟", "\n".join(lines)),
+                ephemeral=True,
+            )
+
+        if not carta:
+            return await interaction.response.send_message(
+                embed=notice("Falta el nombre", "Indica una carta. Ejemplo: `/wishlist añadir Mielabo`.", 0xFEE75C),
+                ephemeral=True,
+            )
+
+        row = await card_row(carta)
+        if not row:
+            return await interaction.response.send_message(
+                embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245),
+                ephemeral=True,
+            )
+
+        if accion == "añadir":
+            added = await wishlist_add(gid, uid, row["slug"])
+            msg = (f"{card_emoji(row)} **{row['name']}** añadida a tu wishlist. Te avisaré por DM si aparece en el mercado. 🔔"
+                   if added else f"**{row['name']}** ya estaba en tu wishlist.")
+            return await interaction.response.send_message(embed=notice("Wishlist 🌟", msg), ephemeral=True)
+
+        if accion == "quitar":
+            removed = await wishlist_remove(gid, uid, row["slug"])
+            msg = (f"{card_emoji(row)} **{row['name']}** eliminada de tu wishlist."
+                   if removed else f"**{row['name']}** no estaba en tu wishlist.")
+            return await interaction.response.send_message(embed=notice("Wishlist 🌟", msg), ephemeral=True)
+
+    # ── FUSIÓN ────────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="fusion", description="Fusiona 3 copias de una carta para obtener una de mayor rareza")
+    @app_commands.guild_only()
+    @app_commands.describe(carta="Carta que quieres fusionar (necesitas ×3 copias)")
+    async def fusion_cmd(self, interaction: discord.Interaction, carta: str):
+        gid, uid = interaction.guild_id, interaction.user.id
+        row = await card_row(carta)
+        if not row:
+            return await interaction.response.send_message(
+                embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245),
+                ephemeral=True,
+            )
+
+        rule = FUSION_RULES.get(row["rarity"])
+        if not rule:
+            return await interaction.response.send_message(
+                embed=notice("Fusión no disponible", f"Las cartas **Legendarias** no pueden fusionarse.", 0xED4245),
+                ephemeral=True,
+            )
+
+        copies, cost, result_rarity = rule["copies"], rule["cost"], rule["result"]
+
+        owned = await db.fetchval(
+            "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
+            gid, uid, row["slug"],
+        ) or 0
+        if owned < copies:
+            return await interaction.response.send_message(
+                embed=notice("Copias insuficientes",
+                             f"Necesitas **×{copies}** copias de **{row['name']}** y tienes **×{owned}**.", 0xED4245),
+                ephemeral=True,
+            )
+
+        await ensure_wallet(gid, uid)
+        wallet = await db.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", gid, uid)
+        if not wallet or wallet["coins"] < cost:
+            return await interaction.response.send_message(
+                embed=notice("Monedas insuficientes",
+                             f"La fusión cuesta **{coins_text(cost)} Abo Coins** y tienes **{coins_text(wallet['coins'] if wallet else 0)}**.", 0xED4245),
+                ephemeral=True,
+            )
+
+        # Elige aleatoriamente una carta de la rareza resultado
+        candidates = await db.fetch(
+            "SELECT * FROM card_catalog WHERE active=TRUE AND rarity=$1", result_rarity
+        )
+        if not candidates:
+            return await interaction.response.send_message(
+                embed=notice("Sin cartas disponibles", f"No hay cartas de rareza **{result_rarity}** en el catálogo.", 0xED4245),
+                ephemeral=True,
+            )
+        result_row = random.choice(candidates)
+
+        embed = notice(
+            "Confirmar fusión ✨",
+            f"Vas a combinar **×{copies} {card_emoji(row)} {row['name']}** ({row['rarity']})\n"
+            f"y gastar **{coins_text(cost)} Abo Coins**\n\n"
+            f"A cambio recibirás una carta aleatoria de rareza **{result_rarity}**.\n"
+            f"*(En este caso: {card_emoji(result_row)} **{result_row['name']}**)*\n\n"
+            f"⚠️ Esta acción no se puede deshacer.",
+            rarity_color(result_rarity),
+        )
+        view = FusionConfirmView(gid, uid, row, result_row["slug"], result_row, copies, cost)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    # ── EVOLUCIÓN ─────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="evolucionar", description="Evoluciona una carta a su forma avanzada")
+    @app_commands.guild_only()
+    @app_commands.describe(carta="Carta base que quieres evolucionar")
+    async def evolucionar_cmd(self, interaction: discord.Interaction, carta: str):
+        gid, uid = interaction.guild_id, interaction.user.id
+        row = await card_row(carta)
+        if not row:
+            return await interaction.response.send_message(
+                embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245),
+                ephemeral=True,
+            )
+
+        evo = await db.fetchrow(
+            "SELECT * FROM card_evolutions WHERE base_slug=$1", row["slug"]
+        )
+        if not evo:
+            return await interaction.response.send_message(
+                embed=notice("Sin evolución", f"**{row['name']}** no tiene una evolución configurada.", 0xFEE75C),
+                ephemeral=True,
+            )
+
+        evolved_row = await db.fetchrow("SELECT * FROM card_catalog WHERE slug=$1", evo["evolved_slug"])
+        if not evolved_row:
+            return await interaction.response.send_message(
+                embed=notice("Error de configuración", "La carta evolucionada no existe en el catálogo.", 0xED4245),
+                ephemeral=True,
+            )
+
+        copies_needed, cost = evo["cost_copies"], evo["cost_coins"]
+        owned = await db.fetchval(
+            "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
+            gid, uid, row["slug"],
+        ) or 0
+        if owned < copies_needed:
+            return await interaction.response.send_message(
+                embed=notice("Copias insuficientes",
+                             f"Necesitas **×{copies_needed}** copias de **{row['name']}** y tienes **×{owned}**.", 0xED4245),
+                ephemeral=True,
+            )
+
+        await ensure_wallet(gid, uid)
+        wallet = await db.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2", gid, uid)
+        if not wallet or wallet["coins"] < cost:
+            return await interaction.response.send_message(
+                embed=notice("Monedas insuficientes",
+                             f"Necesitas **{coins_text(cost)} Abo Coins** y tienes **{coins_text(wallet['coins'] if wallet else 0)}**.", 0xED4245),
+                ephemeral=True,
+            )
+
+        embed = notice(
+            "Confirmar evolución 🌟",
+            f"{card_emoji(row)} **{row['name']}** ({row['rarity']}) → {card_emoji(evolved_row)} **{evolved_row['name']}** ({evolved_row['rarity']})\n\n"
+            f"Costo: **×{copies_needed}** copias + **{coins_text(cost)} Abo Coins**\n\n"
+            f"⚠️ Esta acción no se puede deshacer.",
+            rarity_color(evolved_row["rarity"]),
+        )
+        view = EvolveConfirmView(gid, uid, row, evolved_row, cost, copies_needed)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="evolucion_configurar", description="Configura la evolución de una carta (admin)")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(
+        carta_base="Carta que puede evolucionar",
+        carta_evolucion="Carta a la que evoluciona",
+        costo_monedas="Abo Coins necesarias",
+        costo_copias="Copias de la carta base necesarias",
+    )
+    async def evolucion_configurar(self, interaction: discord.Interaction,
+                                   carta_base: str, carta_evolucion: str,
+                                   costo_monedas: int = 500, costo_copias: int = 3):
+        base = await card_row(carta_base)
+        evolved = await card_row(carta_evolucion)
+        if not base or not evolved:
+            return await interaction.response.send_message(
+                embed=notice("Carta no encontrada", "Revisa los nombres de ambas cartas.", 0xED4245),
+                ephemeral=True,
+            )
+        if base["slug"] == evolved["slug"]:
+            return await interaction.response.send_message(
+                embed=notice("Configuración inválida", "La carta base y la evolucionada no pueden ser la misma.", 0xED4245),
+                ephemeral=True,
+            )
+        await db.execute(
+            """INSERT INTO card_evolutions (base_slug,evolved_slug,cost_coins,cost_copies)
+               VALUES ($1,$2,$3,$4)
+               ON CONFLICT (base_slug) DO UPDATE SET
+                 evolved_slug=EXCLUDED.evolved_slug,
+                 cost_coins=EXCLUDED.cost_coins,
+                 cost_copies=EXCLUDED.cost_copies""",
+            base["slug"], evolved["slug"], costo_monedas, costo_copias,
+        )
+        await interaction.response.send_message(
+            embed=notice(
+                "Evolución configurada ✅",
+                f"{card_emoji(base)} **{base['name']}** → {card_emoji(evolved)} **{evolved['name']}**\n"
+                f"Costo: **×{costo_copias}** copias + **{coins_text(costo_monedas)} Abo Coins**",
+                0x57F287,
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="evolucion_ver", description="Muestra las evoluciones configuradas")
+    @app_commands.guild_only()
+    async def evolucion_ver(self, interaction: discord.Interaction):
+        rows = await db.fetch(
+            """SELECT e.base_slug,e.evolved_slug,e.cost_coins,e.cost_copies,
+                      b.name AS base_name,b.rarity AS base_rarity,b.emoji_name AS b_ename,b.emoji_id AS b_eid,
+                      v.name AS evo_name,v.rarity AS evo_rarity,v.emoji_name AS v_ename,v.emoji_id AS v_eid
+               FROM card_evolutions e
+               JOIN card_catalog b ON b.slug=e.base_slug
+               JOIN card_catalog v ON v.slug=e.evolved_slug
+               ORDER BY b.rarity,b.name"""
+        )
+        if not rows:
+            return await interaction.response.send_message(
+                embed=notice("Sin evoluciones", "Aún no hay evoluciones configuradas. Usa `/evolucion_configurar`.", 0xFEE75C),
+                ephemeral=True,
+            )
+        base_dummy = lambda r, pref: {"emoji_name": r[f"{pref}_ename"], "emoji_id": r[f"{pref}_eid"], "rarity": r[f"{pref}_rarity"]}
+        lines = []
+        for r in rows:
+            b_emoji = card_emoji(base_dummy(r, "b"))
+            v_emoji = card_emoji(base_dummy(r, "v"))
+            lines.append(
+                f"{b_emoji} **{r['base_name']}** → {v_emoji} **{r['evo_name']}** · "
+                f"×{r['cost_copies']} copias + {coins_text(r['cost_coins'])} AC"
+            )
+        await interaction.response.send_message(
+            embed=notice("Evoluciones disponibles 🌟", "\n".join(lines)),
+            ephemeral=True,
+        )
+
+    # ── ADMIN: CARTAS ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="cartas_regalar", description="Regala cartas a un miembro")
     @app_commands.guild_only()
@@ -903,13 +1400,48 @@ class CardsCog(commands.Cog):
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
             "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets", "profile": "perfil",
+            "wl": "wishlist",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas", "wishlist"}
         if command not in quick:
             return False
         if command == "ayudacartas":
-            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario`\n\nPara publicar, comprar o cancelar en el mercado usa los comandos `/mercado_*` con autocompletado."))
+            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario` · `!wishlist [añadir|quitar <carta>]`\n\nPara fusionar, evolucionar o publicar en el mercado usa los comandos `/fusion`, `/evolucionar` y `/mercado_*`."))
+            return True
+        if command == "wishlist":
+            gid, uid = message.guild.id, message.author.id
+            parts_w = argument.split(None, 1)
+            accion_w = parts_w[0].lower() if parts_w else "ver"
+            carta_w  = parts_w[1].strip() if len(parts_w) > 1 else ""
+            if accion_w == "ver" or not accion_w:
+                rows = await wishlist_rows(gid, uid)
+                if not rows:
+                    await message.channel.send(embed=notice("Tu Wishlist 🌟", "Está vacía. Usa `!wishlist añadir <carta>` para agregar cartas.", 0x5865F2))
+                    return True
+                lines = []
+                for r in rows:
+                    owned = f"✅ ×{r['quantity']}" if r["quantity"] > 0 else "❌"
+                    lines.append(f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · {owned}")
+                await message.channel.send(embed=notice("Tu Wishlist 🌟", "\n".join(lines)))
+                return True
+            if accion_w in {"añadir", "add", "agregar"} and carta_w:
+                row = await card_row(carta_w)
+                if not row:
+                    await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
+                added = await wishlist_add(gid, uid, row["slug"])
+                msg = (f"{card_emoji(row)} **{row['name']}** añadida a tu wishlist. Te avisaré por DM si aparece en el mercado. 🔔"
+                       if added else f"**{row['name']}** ya estaba en tu wishlist.")
+                await message.channel.send(embed=notice("Wishlist 🌟", msg)); return True
+            if accion_w in {"quitar", "remove", "eliminar"} and carta_w:
+                row = await card_row(carta_w)
+                if not row:
+                    await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
+                removed = await wishlist_remove(gid, uid, row["slug"])
+                msg = (f"{card_emoji(row)} **{row['name']}** eliminada de tu wishlist."
+                       if removed else f"**{row['name']}** no estaba en tu wishlist.")
+                await message.channel.send(embed=notice("Wishlist 🌟", msg)); return True
+            await message.channel.send(embed=notice("Uso de !wishlist", "`!wishlist` · `!wishlist añadir <carta>` · `!wishlist quitar <carta>`\nAtajo: `!wl`", 0xFEE75C))
             return True
         if command == "tradeo":
             target = message.mentions[0] if message.mentions else None
@@ -1190,6 +1722,8 @@ class CardsCog(commands.Cog):
                 await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad, interaction.guild_id, interaction.user.id, row["slug"])
                 listing = await connection.fetchrow("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5) RETURNING id", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
         await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una.\nID de publicación: **#{listing['id']}**"), ephemeral=True)
+        # Notificar a quienes tienen esta carta en su wishlist
+        self.bot.loop.create_task(notify_wishlist(self.bot, interaction.guild_id, interaction.user.id, row["slug"]))
 
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
