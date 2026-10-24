@@ -548,9 +548,61 @@ def damage_num(value,default=0):
     match=re.search(r"\d+(?:\.\d+)?",s)
     return int(float(match.group(0))) if match else default
 
+# ─── Helpers de presentación de batalla ──────────────────────────────────────
+
+STATE_EMOJI = {
+    "Quemadura":    "🔥",
+    "Veneno":       "☠️",
+    "Aturdimiento": "⚡",
+    "Escudo":       "🛡️",
+    "Regeneración": "💚",
+    "Silencio":     "🔇",
+    "Debilitado":   "⬇️",
+    "Lento":        "🐢",
+}
+
+
+def hp_bar(current: int, maximum: int, length: int = 10) -> str:
+    """Barra de HP con caracteres █/░."""
+    if maximum <= 0:
+        return "░" * length
+    filled = round(max(0, min(current, maximum)) / maximum * length)
+    return "█" * filled + "░" * (length - filled)
+
+
+def format_states(states: dict) -> str:
+    """Devuelve estados con emoji y turnos restantes, o 'Sin efectos'."""
+    if not states:
+        return "Sin efectos"
+    parts = []
+    for name, turns in states.items():
+        emoji = STATE_EMOJI.get(name, "•")
+        parts.append(f"{emoji} {name} ({turns}t)")
+    return " · ".join(parts)
+
+
 def battle_line(player):
-    states=", ".join(f"{key}({value})" for key,value in player["states"].items()) or "sin estados"
-    return f"**{player['mention']}** · {card_emoji(player['card'])} **{player['card']['name']}**\n❤️ {player['hp']}/{player['max_hp']} HP · ⚡ {player['energy']}/5 · {states}"
+    """Línea compacta legacy (usada en timeout embed)."""
+    return (
+        f"**{player['mention']}** · {card_emoji(player['card'])} **{player['card']['name']}**\n"
+        f"❤️ {player['hp']}/{player['max_hp']} HP · ⚡ {player['energy']}/5 · "
+        f"{format_states(player['states'])}"
+    )
+
+
+def _player_field(player, is_turn: bool) -> str:
+    """Bloque de un jugador para el embed de combate."""
+    card = player["card"]
+    bar  = hp_bar(player["hp"], player["max_hp"])
+    pct  = round(player["hp"] / max(player["max_hp"], 1) * 100)
+    turn_indicator = " 🎮 **← turno**" if is_turn else ""
+    defending_tag  = " 🛡️ *defendiendo*" if player.get("defending") else ""
+    return (
+        f"{card_emoji(card)} **{card['name']}**{turn_indicator}{defending_tag}\n"
+        f"❤️ `{bar}` {player['hp']}/{player['max_hp']} HP ({pct}%)\n"
+        f"⚡ Energía: **{player['energy']}/5**\n"
+        f"{format_states(player['states'])}"
+    )
 
 class BattleChallengeView(discord.ui.View):
     def __init__(self,cog,guild_id,challenger,opponent):
@@ -608,53 +660,214 @@ class AbilityChoiceView(discord.ui.View):
 
 BATTLE_TURN_TIMEOUT = 90  # segundos sin acción antes de anular la pelea
 
+
+class SurrenderConfirmView(discord.ui.View):
+    """Confirmación de rendición para evitar misclicks."""
+
+    def __init__(self, cog, key, user_id: int):
+        super().__init__(timeout=20)
+        self.cog = cog
+        self.key = key
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Este diálogo no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Sí, rendirse", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        session = self.cog.battles.get(self.key)
+        if not session:
+            return await interaction.response.send_message("La pelea ya terminó.", ephemeral=True)
+        enemy_id = next(x for x in session["users"] if x != self.user_id)
+        actor = session["players"][self.user_id]
+        enemy = session["players"][enemy_id]
+        await interaction.response.defer()
+        await self.cog.end_battle(
+            interaction, self.key, enemy_id,
+            f"{actor['mention']} se rindió. ¡Victoria para {enemy['mention']}! 🏆"
+        )
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            content="Rendición cancelada.", embed=None, view=None
+        )
+
+
 class BattleView(discord.ui.View):
-    def __init__(self,cog,key):
-        super().__init__(timeout=BATTLE_TURN_TIMEOUT); self.cog=cog; self.key=key
+    def __init__(self, cog, key):
+        super().__init__(timeout=BATTLE_TURN_TIMEOUT)
+        self.cog = cog
+        self.key = key
+
     async def on_timeout(self):
-        session=self.cog.battles.pop(self.key,None)
-        if not session: return
-        turn_mention=f"<@{session['turn']}>"
-        if session.get('db_id'):
-            try: await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",session['db_id'])
-            except Exception: pass
-        # Editar el mensaje usando channel_id + message_id guardados en la sesión
+        session = self.cog.battles.pop(self.key, None)
+        if not session:
+            return
+        turn_mention = f"<@{session['turn']}>"
+        if session.get("db_id"):
+            try:
+                await db.execute(
+                    "UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",
+                    session["db_id"],
+                )
+            except Exception:
+                pass
         try:
-            guild=self.cog.bot.get_guild(session['guild_id'])
-            channel=guild.get_channel(session['channel_id']) if guild else None
-            msg_id=session.get('battle_message_id')
+            guild   = self.cog.bot.get_guild(session["guild_id"])
+            channel = guild.get_channel(session["channel_id"]) if guild else None
+            msg_id  = session.get("battle_message_id")
             if channel and msg_id:
-                p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
-                embed=notice("⚔️ Pelea carta contra carta",
-                    f"⏰ Pelea anulada por inactividad.\n{turn_mention} no actuó a tiempo.\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",
-                    0x95A5A6)
-                embed.add_field(name="Resultado",value="Anulada · Sin ganador",inline=False)
-                msg=channel.get_partial_message(msg_id)
-                await msg.edit(embed=embed,view=None)
-        except Exception: pass
-    async def act(self,interaction,action):
-        session=self.cog.battles.get(self.key)
-        if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
-        if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
-        await interaction.response.defer(); await self.cog.battle_action(interaction,self.key,action)
-    @discord.ui.button(label="Ataque",emoji="⚔️",style=discord.ButtonStyle.primary)
-    async def attack(self,interaction,button): await self.act(interaction,"attack")
-    @discord.ui.button(label="Habilidad",emoji="✨",style=discord.ButtonStyle.success)
-    async def ability(self,interaction,button):
-        session=self.cog.battles.get(self.key)
-        if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
-        if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
-        stats=combat_stats(session['players'][session['turn']]['card'])
-        available=[n for n in range(1,4) if str(stats.get("Habilidad" if n==1 else f"Habilidad {n}","")).strip()]
-        if not available: return await interaction.response.send_message("Esta carta no tiene habilidades configuradas.",ephemeral=True)
-        if len(available)==1:
-            await interaction.response.defer(); await self.cog.battle_action(interaction,self.key,f"ability:{available[0]}")
+                p1 = session["players"][session["users"][0]]
+                p2 = session["players"][session["users"][1]]
+                embed = discord.Embed(
+                    title="⚔️ Pelea · Anulada",
+                    description=f"⏰ {turn_mention} no actuó a tiempo. Pelea anulada por inactividad.",
+                    color=0x95A5A6,
+                )
+                embed.add_field(
+                    name=f"{card_emoji(p1['card'])} {p1['card']['name']}",
+                    value=_player_field(p1, False),
+                    inline=True,
+                )
+                embed.add_field(
+                    name=f"{card_emoji(p2['card'])} {p2['card']['name']}",
+                    value=_player_field(p2, False),
+                    inline=True,
+                )
+                embed.add_field(name="Resultado", value="Anulada · Sin ganador", inline=False)
+                await channel.get_partial_message(msg_id).edit(embed=embed, view=None)
+        except Exception:
+            pass
+
+    async def _check_turn(self, interaction: discord.Interaction) -> bool:
+        session = self.cog.battles.get(self.key)
+        if not session:
+            await interaction.response.send_message("La pelea ya terminó.", ephemeral=True)
+            return False
+        if interaction.user.id != session["turn"]:
+            await interaction.response.send_message("No es tu turno.", ephemeral=True)
+            return False
+        return True
+
+    # ── Fila 1 ───────────────────────────────────────────────────────────────
+
+    @discord.ui.button(label="Atacar", emoji="⚔️", style=discord.ButtonStyle.primary, row=0)
+    async def attack(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_turn(interaction):
+            return
+        await interaction.response.defer()
+        await self.cog.battle_action(interaction, self.key, "attack")
+
+    @discord.ui.button(label="Habilidad", emoji="✨", style=discord.ButtonStyle.success, row=0)
+    async def ability(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = self.cog.battles.get(self.key)
+        if not session:
+            return await interaction.response.send_message("La pelea ya terminó.", ephemeral=True)
+        if interaction.user.id != session["turn"]:
+            return await interaction.response.send_message("No es tu turno.", ephemeral=True)
+        actor  = session["players"][session["turn"]]
+        stats  = combat_stats(actor["card"])
+        available = [
+            n for n in range(1, 4)
+            if str(stats.get("Habilidad" if n == 1 else f"Habilidad {n}", "")).strip()
+        ]
+        if not available:
+            return await interaction.response.send_message(
+                "Esta carta no tiene habilidades configuradas.", ephemeral=True
+            )
+        if actor["energy"] < 2:
+            return await interaction.response.send_message(
+                f"⚡ Necesitas **2 de energía** para usar una habilidad. "
+                f"Tienes **{actor['energy']}/5** — ataca o defiéndete para ganar más.",
+                ephemeral=True,
+            )
+        if len(available) == 1:
+            await interaction.response.defer()
+            await self.cog.battle_action(interaction, self.key, f"ability:{available[0]}")
         else:
-            await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
-    @discord.ui.button(label="Defender",emoji="🛡️",style=discord.ButtonStyle.secondary)
-    async def defend(self,interaction,button): await self.act(interaction,"defend")
-    @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
-    async def surrender(self,interaction,button): await self.act(interaction,"surrender")
+            await interaction.response.edit_message(
+                embed=notice(
+                    "✨ Elige una habilidad",
+                    "Selecciona qué habilidad usar. Esto **no** consume tu turno aún.",
+                ),
+                view=AbilityChoiceView(self.cog, self.key, interaction.user.id, stats),
+            )
+
+    @discord.ui.button(label="Defender", emoji="🛡️", style=discord.ButtonStyle.secondary, row=0)
+    async def defend(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_turn(interaction):
+            return
+        await interaction.response.defer()
+        await self.cog.battle_action(interaction, self.key, "defend")
+
+    # ── Fila 2 ───────────────────────────────────────────────────────────────
+
+    @discord.ui.button(label="Info", emoji="📋", style=discord.ButtonStyle.secondary, row=1)
+    async def info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = self.cog.battles.get(self.key)
+        if not session:
+            return await interaction.response.send_message("La pelea ya terminó.", ephemeral=True)
+        # Funciona para cualquier jugador (no solo el que tiene el turno)
+        if interaction.user.id not in session["players"]:
+            return await interaction.response.send_message(
+                "No eres parte de esta pelea.", ephemeral=True
+            )
+        player = session["players"][interaction.user.id]
+        card   = player["card"]
+        stats  = combat_stats(card)
+        embed  = discord.Embed(
+            title=f"📋 {card_emoji(card)} {card['name']} — Stats de combate",
+            color=rarity_color(card["rarity"]),
+        )
+        embed.add_field(name="❤️ HP",    value=f"{player['hp']}/{player['max_hp']}", inline=True)
+        embed.add_field(name="⚔️ ATK",   value=str(stats.get("ATK", "—")),           inline=True)
+        embed.add_field(name="🛡️ DEF",   value=str(stats.get("DEF", "—")),           inline=True)
+        embed.add_field(name="⚡ Speed", value=str(stats.get("Speed", "—")),         inline=True)
+        embed.add_field(name="⚡ Energía", value=f"{player['energy']}/5",            inline=True)
+        embed.add_field(name="Estados",  value=format_states(player["states"]),       inline=True)
+        # Habilidades
+        habs = []
+        for n in range(1, 4):
+            suffix = "" if n == 1 else f" {n}"
+            name   = str(stats.get(f"Habilidad{suffix}", "")).strip()
+            if name:
+                dmg  = stats.get(f"Daño de habilidad{suffix}", "—")
+                desc = str(stats.get(f"Descripción de habilidad{suffix}", "")).strip()
+                habs.append(f"**✨ Hab. {n}: {name}** · Daño: {dmg}" + (f"\n*{desc}*" if desc else ""))
+        if habs:
+            embed.add_field(name="Habilidades (coste: 2 ⚡)", value="\n".join(habs), inline=False)
+        pasiva = str(stats.get("Pasiva", "")).strip()
+        if pasiva:
+            desc_p = str(stats.get("Descripción de pasiva", "")).strip()
+            embed.add_field(
+                name="💤 Pasiva", value=f"**{pasiva}**" + (f"\n*{desc_p}*" if desc_p else ""), inline=False
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Rendirse", emoji="🏳️", style=discord.ButtonStyle.danger, row=1)
+    async def surrender(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = self.cog.battles.get(self.key)
+        if not session:
+            return await interaction.response.send_message("La pelea ya terminó.", ephemeral=True)
+        if interaction.user.id not in session["players"]:
+            return await interaction.response.send_message(
+                "No eres parte de esta pelea.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=notice(
+                "¿Seguro que quieres rendirte? 🏳️",
+                "Esta acción no se puede deshacer. Perderás la pelea.",
+                0xED4245,
+            ),
+            view=SurrenderConfirmView(self.cog, self.key, interaction.user.id),
+            ephemeral=True,
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPARAR COLECCIONES
@@ -766,18 +979,47 @@ class FusionConfirmView(discord.ui.View):
 # EVOLUCIÓN
 # ─────────────────────────────────────────────────────────────────────────────
 
-class EvolveConfirmView(discord.ui.View):
-    """Botones de confirmación para la evolución de una carta."""
+def _apply_boost(stats: dict, boost_pct: int) -> dict:
+    """Devuelve una copia de stats con HP, ATK, DEF y Speed subidos en boost_pct %."""
+    NUMERIC_KEYS = {"HP", "ATK", "DEF", "Speed"}
+    result = dict(stats)
+    for key in NUMERIC_KEYS:
+        raw = str(result.get(key, "")).strip()
+        if raw:
+            try:
+                result[key] = str(round(int(raw) * (1 + boost_pct / 100)))
+            except ValueError:
+                pass
+    return result
 
-    def __init__(self, guild_id: int, user_id: int, base_row, evolved_row,
-                 cost_coins: int, cost_copies: int):
+
+def _boosted_stats_preview(base_stats: dict, boost_pct: int) -> str:
+    """Texto comparativo de stats antes → después del boost."""
+    NUMERIC_KEYS = [("HP", "❤️"), ("ATK", "⚔️"), ("DEF", "🛡️"), ("Speed", "⚡")]
+    lines = []
+    for key, emoji in NUMERIC_KEYS:
+        raw = str(base_stats.get(key, "")).strip()
+        if raw:
+            try:
+                after = round(int(raw) * (1 + boost_pct / 100))
+                lines.append(f"{emoji} **{key}**: {raw} → **{after}**")
+            except ValueError:
+                pass
+    return "\n".join(lines) if lines else "—"
+
+
+class EvolveConfirmView(discord.ui.View):
+    """Sube el nivel de evolución de una carta del usuario, mejorando sus stats."""
+
+    def __init__(self, guild_id: int, user_id: int, card_row_data, evo_row,
+                 current_level: int, current_boost: int):
         super().__init__(timeout=60)
         self.guild_id = guild_id
         self.user_id = user_id
-        self.base_row = base_row
-        self.evolved_row = evolved_row
-        self.cost_coins = cost_coins
-        self.cost_copies = cost_copies
+        self.card_row_data = card_row_data
+        self.evo_row = evo_row          # fila de card_evolutions
+        self.current_level = current_level
+        self.current_boost = current_boost
         self.done = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -793,45 +1035,68 @@ class EvolveConfirmView(discord.ui.View):
         self.done = True
         self.stop()
 
+        slug       = self.card_row_data["slug"]
+        new_level  = self.current_level + 1
+        new_boost  = self.current_boost + self.evo_row["stat_boost_pct"]
+        cost_cop   = self.evo_row["cost_copies"]
+        cost_coins = self.evo_row["cost_coins"]
+
         async with db._pool().acquire() as conn:
             async with conn.transaction():
                 inv = await conn.fetchrow(
                     "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3 FOR UPDATE",
-                    self.guild_id, self.user_id, self.base_row["slug"],
+                    self.guild_id, self.user_id, slug,
                 )
                 wallet = await conn.fetchrow(
                     "SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
                     self.guild_id, self.user_id,
                 )
-                if not inv or inv["quantity"] < self.cost_copies:
+                if not inv or inv["quantity"] < cost_cop:
                     return await interaction.response.edit_message(
                         embed=notice("Evolución cancelada ❌",
-                                     f"Ya no tienes **×{self.cost_copies}** copias de **{self.base_row['name']}**.", 0xED4245),
+                                     f"Ya no tienes **×{cost_cop}** copias de **{self.card_row_data['name']}**.", 0xED4245),
                         view=None,
                     )
-                if not wallet or wallet["coins"] < self.cost_coins:
+                if not wallet or wallet["coins"] < cost_coins:
                     return await interaction.response.edit_message(
                         embed=notice("Evolución cancelada ❌",
-                                     f"No tienes suficientes Abo Coins (necesitas **{coins_text(self.cost_coins)}**).", 0xED4245),
+                                     f"No tienes suficientes Abo Coins (necesitas **{coins_text(cost_coins)}**).", 0xED4245),
                         view=None,
                     )
+                # Consumir copias y monedas
                 await conn.execute(
                     "UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4",
-                    self.cost_copies, self.guild_id, self.user_id, self.base_row["slug"],
+                    cost_cop, self.guild_id, self.user_id, slug,
                 )
                 await conn.execute(
                     "UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",
-                    self.cost_coins, self.guild_id, self.user_id,
+                    cost_coins, self.guild_id, self.user_id,
                 )
-                await add_card(conn, self.guild_id, self.user_id, self.evolved_row["slug"])
+                # Guardar / actualizar nivel de evolución personal
+                await conn.execute(
+                    """INSERT INTO card_inventory_evo (guild_id,user_id,card_slug,evo_level,stat_boost_pct)
+                       VALUES ($1,$2,$3,$4,$5)
+                       ON CONFLICT (guild_id,user_id,card_slug) DO UPDATE SET
+                         evo_level      = EXCLUDED.evo_level,
+                         stat_boost_pct = EXCLUDED.stat_boost_pct""",
+                    self.guild_id, self.user_id, slug, new_level, new_boost,
+                )
+
+        base_stats = self.card_row_data.get("stats") or {}
+        if isinstance(base_stats, str):
+            import json as _json
+            try: base_stats = _json.loads(base_stats)
+            except Exception: base_stats = {}
+        preview = _boosted_stats_preview(base_stats, new_boost)
 
         await interaction.response.edit_message(
             embed=notice(
-                "¡Evolución completada! 🌟",
-                f"{card_emoji(self.base_row)} **{self.base_row['name']}** evolucionó a "
-                f"{card_emoji(self.evolved_row)} **{self.evolved_row['name']}** ({self.evolved_row['rarity']}).\n\n"
-                f"Se consumieron **×{self.cost_copies}** copias y **{coins_text(self.cost_coins)} Abo Coins**.",
-                rarity_color(self.evolved_row["rarity"]),
+                f"¡Evolución completada! 🌟 (Nivel {new_level})",
+                f"{card_emoji(self.card_row_data)} **{self.card_row_data['name']}** subió al nivel de evolución **{new_level}**.\n"
+                f"Sus stats ahora tienen un **+{new_boost}%** respecto al original.\n\n"
+                f"{preview}\n\n"
+                f"Se consumieron **×{cost_cop}** copias y **{coins_text(cost_coins)} Abo Coins**.",
+                rarity_color(self.card_row_data["rarity"]),
             ),
             view=None,
         )
@@ -1029,9 +1294,9 @@ class CardsCog(commands.Cog):
 
     # ── EVOLUCIÓN ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="evolucionar", description="Evoluciona una carta a su forma avanzada")
+    @app_commands.command(name="evolucionar", description="Sube el nivel de evolución de una carta mejorando sus stats")
     @app_commands.guild_only()
-    @app_commands.describe(carta="Carta base que quieres evolucionar")
+    @app_commands.describe(carta="Carta que quieres evolucionar")
     async def evolucionar_cmd(self, interaction: discord.Interaction, carta: str):
         gid, uid = interaction.guild_id, interaction.user.id
         row = await card_row(carta)
@@ -1046,18 +1311,28 @@ class CardsCog(commands.Cog):
         )
         if not evo:
             return await interaction.response.send_message(
-                embed=notice("Sin evolución", f"**{row['name']}** no tiene una evolución configurada.", 0xFEE75C),
+                embed=notice("Sin evolución", f"**{row['name']}** no tiene evolución configurada.", 0xFEE75C),
                 ephemeral=True,
             )
 
-        evolved_row = await db.fetchrow("SELECT * FROM card_catalog WHERE slug=$1", evo["evolved_slug"])
-        if not evolved_row:
+        # Nivel actual del usuario para esta carta
+        evo_data = await db.fetchrow(
+            "SELECT evo_level, stat_boost_pct FROM card_inventory_evo WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
+            gid, uid, row["slug"],
+        )
+        current_level = evo_data["evo_level"] if evo_data else 0
+        current_boost = evo_data["stat_boost_pct"] if evo_data else 0
+
+        if current_level >= evo["max_level"]:
             return await interaction.response.send_message(
-                embed=notice("Error de configuración", "La carta evolucionada no existe en el catálogo.", 0xED4245),
+                embed=notice("Nivel máximo alcanzado ✨",
+                             f"Tu **{row['name']}** ya está al nivel máximo de evolución (**{evo['max_level']}**) "
+                             f"con **+{current_boost}%** en stats.", 0xF1C40F),
                 ephemeral=True,
             )
 
-        copies_needed, cost = evo["cost_copies"], evo["cost_coins"]
+        copies_needed = evo["cost_copies"]
+        cost = evo["cost_coins"]
         owned = await db.fetchval(
             "SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3",
             gid, uid, row["slug"],
@@ -1078,14 +1353,24 @@ class CardsCog(commands.Cog):
                 ephemeral=True,
             )
 
+        # Preview de stats tras el boost
+        import json as _json
+        base_stats = row.get("stats") or {}
+        if isinstance(base_stats, str):
+            try: base_stats = _json.loads(base_stats)
+            except Exception: base_stats = {}
+        next_boost = current_boost + evo["stat_boost_pct"]
+        preview = _boosted_stats_preview(base_stats, next_boost)
+
         embed = notice(
-            "Confirmar evolución 🌟",
-            f"{card_emoji(row)} **{row['name']}** ({row['rarity']}) → {card_emoji(evolved_row)} **{evolved_row['name']}** ({evolved_row['rarity']})\n\n"
-            f"Costo: **×{copies_needed}** copias + **{coins_text(cost)} Abo Coins**\n\n"
+            f"Confirmar evolución 🌟 → Nivel {current_level + 1}/{evo['max_level']}",
+            f"{card_emoji(row)} **{row['name']}** mejorará sus stats un **+{next_boost}%** acumulado.\n\n"
+            f"{preview}\n\n"
+            f"Costo: **×{copies_needed}** copias + **{coins_text(cost)} Abo Coins**\n"
             f"⚠️ Esta acción no se puede deshacer.",
-            rarity_color(evolved_row["rarity"]),
+            rarity_color(row["rarity"]),
         )
-        view = EvolveConfirmView(gid, uid, row, evolved_row, cost, copies_needed)
+        view = EvolveConfirmView(gid, uid, row, evo, current_level, current_boost)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="evolucion_configurar", description="Configura la evolución de una carta (admin)")
@@ -1093,39 +1378,47 @@ class CardsCog(commands.Cog):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
         carta_base="Carta que puede evolucionar",
-        carta_evolucion="Carta a la que evoluciona",
-        costo_monedas="Abo Coins necesarias",
-        costo_copias="Copias de la carta base necesarias",
+        boost_por_nivel="% de mejora en stats por nivel (ej: 25)",
+        nivel_maximo="Niveles máximos de evolución (ej: 5)",
+        costo_monedas="Abo Coins por nivel",
+        costo_copias="Copias necesarias por nivel",
     )
     async def evolucion_configurar(self, interaction: discord.Interaction,
-                                   carta_base: str, carta_evolucion: str,
-                                   costo_monedas: int = 500, costo_copias: int = 3):
+                                   carta_base: str,
+                                   boost_por_nivel: int = 25,
+                                   nivel_maximo: int = 5,
+                                   costo_monedas: int = 100,
+                                   costo_copias: int = 2):
         base = await card_row(carta_base)
-        evolved = await card_row(carta_evolucion)
-        if not base or not evolved:
+        if not base:
             return await interaction.response.send_message(
-                embed=notice("Carta no encontrada", "Revisa los nombres de ambas cartas.", 0xED4245),
-                ephemeral=True,
+                embed=notice("Carta no encontrada", "Revisa el nombre.", 0xED4245), ephemeral=True,
             )
-        if base["slug"] == evolved["slug"]:
+        if not 1 <= boost_por_nivel <= 200:
             return await interaction.response.send_message(
-                embed=notice("Configuración inválida", "La carta base y la evolucionada no pueden ser la misma.", 0xED4245),
-                ephemeral=True,
+                embed=notice("Boost inválido", "El boost debe estar entre 1 y 200 %.", 0xED4245), ephemeral=True,
+            )
+        if not 1 <= nivel_maximo <= 20:
+            return await interaction.response.send_message(
+                embed=notice("Nivel inválido", "El nivel máximo debe estar entre 1 y 20.", 0xED4245), ephemeral=True,
             )
         await db.execute(
-            """INSERT INTO card_evolutions (base_slug,evolved_slug,cost_coins,cost_copies)
-               VALUES ($1,$2,$3,$4)
+            """INSERT INTO card_evolutions (base_slug,cost_coins,cost_copies,stat_boost_pct,max_level)
+               VALUES ($1,$2,$3,$4,$5)
                ON CONFLICT (base_slug) DO UPDATE SET
-                 evolved_slug=EXCLUDED.evolved_slug,
-                 cost_coins=EXCLUDED.cost_coins,
-                 cost_copies=EXCLUDED.cost_copies""",
-            base["slug"], evolved["slug"], costo_monedas, costo_copias,
+                 cost_coins     = EXCLUDED.cost_coins,
+                 cost_copies    = EXCLUDED.cost_copies,
+                 stat_boost_pct = EXCLUDED.stat_boost_pct,
+                 max_level      = EXCLUDED.max_level""",
+            base["slug"], costo_monedas, costo_copias, boost_por_nivel, nivel_maximo,
         )
         await interaction.response.send_message(
             embed=notice(
                 "Evolución configurada ✅",
-                f"{card_emoji(base)} **{base['name']}** → {card_emoji(evolved)} **{evolved['name']}**\n"
-                f"Costo: **×{costo_copias}** copias + **{coins_text(costo_monedas)} Abo Coins**",
+                f"{card_emoji(base)} **{base['name']}**\n"
+                f"Boost por nivel: **+{boost_por_nivel}%** · Máximo: **{nivel_maximo} niveles** "
+                f"(hasta **+{boost_por_nivel * nivel_maximo}%**)\n"
+                f"Costo por nivel: **×{costo_copias}** copias + **{coins_text(costo_monedas)} Abo Coins**",
                 0x57F287,
             ),
             ephemeral=True,
@@ -1135,27 +1428,26 @@ class CardsCog(commands.Cog):
     @app_commands.guild_only()
     async def evolucion_ver(self, interaction: discord.Interaction):
         rows = await db.fetch(
-            """SELECT e.base_slug,e.evolved_slug,e.cost_coins,e.cost_copies,
-                      b.name AS base_name,b.rarity AS base_rarity,b.emoji_name AS b_ename,b.emoji_id AS b_eid,
-                      v.name AS evo_name,v.rarity AS evo_rarity,v.emoji_name AS v_ename,v.emoji_id AS v_eid
+            """SELECT e.base_slug, e.cost_coins, e.cost_copies, e.stat_boost_pct, e.max_level,
+                      b.name AS base_name, b.rarity AS base_rarity, b.emoji_name AS b_ename, b.emoji_id AS b_eid
                FROM card_evolutions e
-               JOIN card_catalog b ON b.slug=e.base_slug
-               JOIN card_catalog v ON v.slug=e.evolved_slug
-               ORDER BY b.rarity,b.name"""
+               JOIN card_catalog b ON b.slug = e.base_slug
+               ORDER BY b.rarity, b.name"""
         )
         if not rows:
             return await interaction.response.send_message(
                 embed=notice("Sin evoluciones", "Aún no hay evoluciones configuradas. Usa `/evolucion_configurar`.", 0xFEE75C),
                 ephemeral=True,
             )
-        base_dummy = lambda r, pref: {"emoji_name": r[f"{pref}_ename"], "emoji_id": r[f"{pref}_eid"], "rarity": r[f"{pref}_rarity"]}
         lines = []
         for r in rows:
-            b_emoji = card_emoji(base_dummy(r, "b"))
-            v_emoji = card_emoji(base_dummy(r, "v"))
+            b_emoji = card_emoji({"emoji_name": r["b_ename"], "emoji_id": r["b_eid"], "rarity": r["base_rarity"]})
+            max_total = r["stat_boost_pct"] * r["max_level"]
             lines.append(
-                f"{b_emoji} **{r['base_name']}** → {v_emoji} **{r['evo_name']}** · "
-                f"×{r['cost_copies']} copias + {coins_text(r['cost_coins'])} AC"
+                f"{b_emoji} **{r['base_name']}** · "
+                f"+{r['stat_boost_pct']}% por nivel · máx {r['max_level']} niveles "
+                f"(hasta **+{max_total}%**) · "
+                f"×{r['cost_copies']} copias + {coins_text(r['cost_coins'])} AC/nivel"
             )
         await interaction.response.send_message(
             embed=notice("Evoluciones disponibles 🌟", "\n".join(lines)),
@@ -1273,12 +1565,26 @@ class CardsCog(commands.Cog):
         if not row:
             return await interaction.response.send_message(embed=notice("Carta no encontrada", "Revisa el nombre en `/coleccion` o `/ranking_cartas`.", 0xED4245), ephemeral=True)
         owned = await db.fetchval("SELECT quantity FROM card_inventory WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"]) or 0
+        evo_data = await db.fetchrow("SELECT evo_level, stat_boost_pct FROM card_inventory_evo WHERE guild_id=$1 AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"])
+        evo_level = evo_data["evo_level"] if evo_data else 0
+        evo_boost = evo_data["stat_boost_pct"] if evo_data else 0
         description = row.get("description") or "Conoce a este personaje de Abo."
         embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
         embed.add_field(name="Rareza", value=row["rarity"], inline=True)
         embed.add_field(name="Valor", value=f"{coins_text(row['base_value'])} Abo Coins", inline=True)
-        embed.add_field(name="Tienes", value=f"×{owned}", inline=True)
-        for field_name, field_value, inline in _combat_embed_fields(row):
+        evo_label = f"×{owned}" + (f"  🌟 Nv.{evo_level} (+{evo_boost}%)" if evo_level > 0 else "")
+        embed.add_field(name="Tienes", value=evo_label, inline=True)
+        # Aplicar boost a los stats si el usuario tiene esta carta evolucionada
+        display_row = dict(row)
+        if evo_boost > 0:
+            import json as _json
+            base_stats = row.get("stats") or {}
+            if isinstance(base_stats, str):
+                try: base_stats = _json.loads(base_stats)
+                except Exception: base_stats = {}
+            boosted = _apply_boost(base_stats, evo_boost)
+            display_row["stats"] = _json.dumps(boosted, ensure_ascii=False)
+        for field_name, field_value, inline in _combat_embed_fields(display_row):
             embed.add_field(name=field_name, value=field_value, inline=inline)
         path = ASSET_DIR / row["image_file"]
         if row.get("image_data"):
@@ -1754,13 +2060,37 @@ class CardsCog(commands.Cog):
         session.update({'started':True,'players':players,'turn':turn,'turns':0})
         rows=[players[x]['card'] for x in session['users']]
         session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],rows[0]['slug'],rows[1]['slug'])
-        await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! ⚔️"),view=BattleView(self,key))
+        await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! Mueve primero el más rápido."),view=BattleView(self,key))
         session['battle_message_id']=interaction.message.id
 
-    def battle_embed(self,session,message):
-        p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
-        embed=notice("⚔️ Pelea carta contra carta",f"{message}\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",0xE67E22)
-        embed.add_field(name="Turno",value=f"{session['turns']+1} · juega <@{session['turn']}>",inline=False)
+    def battle_embed(self, session, message: str, *, color: int = 0xE67E22) -> discord.Embed:
+        """Embed principal de combate: turno, última acción, dos fields de jugador, barra de HP."""
+        p1 = session["players"][session["users"][0]]
+        p2 = session["players"][session["users"][1]]
+        turn_num = session["turns"] + 1
+        turn_uid = session["turn"]
+
+        embed = discord.Embed(
+            title=f"⚔️ Pelea · Turno {turn_num}",
+            color=color,
+        )
+        # Última acción
+        if message:
+            embed.description = f"**Última acción**\n{message}"
+
+        # Fields de los dos jugadores lado a lado
+        embed.add_field(
+            name=f"{card_emoji(p1['card'])} {p1['card']['name']}",
+            value=_player_field(p1, p1["id"] == turn_uid),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{card_emoji(p2['card'])} {p2['card']['name']}",
+            value=_player_field(p2, p2["id"] == turn_uid),
+            inline=True,
+        )
+        # Indicador de turno al pie
+        embed.set_footer(text=f"Turno de <@{turn_uid}> · Timeout: {BATTLE_TURN_TIMEOUT}s")
         return embed
 
     async def battle_action(self,interaction,key,action):
@@ -1780,7 +2110,7 @@ class CardsCog(commands.Cog):
                 if not name or not damage: return await interaction.followup.send("Esta habilidad no tiene daño configurado.",ephemeral=True)
                 if actor['energy']<2:
                     await interaction.followup.send(f"Necesitas 2 ⚡ para usar la habilidad. Tienes {actor['energy']} ⚡ — ataca, defiéndete o ríndate.",ephemeral=True)
-                    msg=await interaction.edit_original_response(embed=self.battle_embed(session,"⚡ Energía insuficiente para la habilidad."),view=BattleView(self,key))
+                    msg=await interaction.edit_original_response(embed=self.battle_embed(session,"⚡ Energía insuficiente — ataca o defiéndete para acumular."),view=BattleView(self,key))
                     session['battle_message_id']=msg.id; return
                 actor['energy']-=2; label=f"✨ Habilidad {ability_number}: {name}"; effect=str(stats.get(f'Estado de habilidad{suffix}','')).strip(); chance=stat_num(stats,f'Probabilidad de efecto de habilidad{suffix}',0); duration=stat_num(stats,f'Duración de efecto de habilidad{suffix}',0)
                 damage_type=str(stats.get(f'Tipo de daño de habilidad{suffix}',stats.get('Tipo de daño','Físico'))).strip()
@@ -1846,10 +2176,24 @@ class CardsCog(commands.Cog):
         msg=await interaction.edit_original_response(embed=self.battle_embed(session,message),view=BattleView(self,key))
         session['battle_message_id']=msg.id
 
-    async def end_battle(self,interaction,key,winner_id,message):
-        session=self.battles.get(key)
-        if not session: return
-        loser_id=next(x for x in session['users'] if x!=winner_id)
-        await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message}),session['db_id'])
-        await interaction.edit_original_response(embed=self.battle_embed(session,message+"\n\n🏆 Pelea terminada."),view=None)
-        self.battles.pop(key,None)
+    async def end_battle(self, interaction, key, winner_id, message):
+        session = self.battles.get(key)
+        if not session:
+            return
+        loser_id = next(x for x in session["users"] if x != winner_id)
+        await db.execute(
+            "UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",
+            winner_id, loser_id, session["turns"], json.dumps({"message": message}), session["db_id"],
+        )
+        # Color verde para el ganador, rojo para el perdedor;
+        # como el embed es compartido usamos verde (victoria)
+        final_embed = self.battle_embed(
+            session,
+            message + "\n\n🏆 **¡Pelea terminada!**",
+            color=0x57F287,
+        )
+        # Sobreescribir título para el estado final
+        final_embed.title = "⚔️ Pelea · ¡Finalizada!"
+        final_embed.set_footer(text=f"Ganador: <@{winner_id}> · {session['turns']} turnos")
+        await interaction.edit_original_response(embed=final_embed, view=None)
+        self.battles.pop(key, None)
