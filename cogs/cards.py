@@ -606,7 +606,7 @@ class AbilityChoiceView(discord.ui.View):
         super().__init__(timeout=30)
         self.add_item(AbilityChoice(cog,key,user_id,stats))
 
-BATTLE_TURN_TIMEOUT = 90  # segundos sin acción antes de anular la pelea
+BATTLE_TURN_TIMEOUT = 420  # segundos sin acción antes de anular la pelea
 
 class BattleView(discord.ui.View):
     def __init__(self,cog,key):
