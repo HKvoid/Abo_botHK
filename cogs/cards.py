@@ -606,7 +606,58 @@ class AbilityChoiceView(discord.ui.View):
         super().__init__(timeout=30)
         self.add_item(AbilityChoice(cog,key,user_id,stats))
 
-BATTLE_TURN_TIMEOUT = 420  # segundos sin acción antes de anular la pelea
+BATTLE_TURN_TIMEOUT = 420  # segundos sin acción antes de anular la pelea (7 min)
+BATTLE_REWARD = 100       # Abo Coins que gana el vencedor
+
+
+class RematchView(discord.ui.View):
+    """Botón de revancha que aparece al terminar una pelea."""
+
+    def __init__(self, cog, finished_session: dict, winner_id: int, loser_id: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.guild_id    = finished_session['guild_id']
+        self.channel_id  = finished_session['channel_id']
+        self.winner_id   = winner_id
+        self.loser_id    = loser_id
+        # Guardamos las cartas usadas para la revancha
+        self.cards_used  = {uid: finished_session['players'][uid]['card']['slug']
+                            for uid in finished_session['users']}
+        self.users       = finished_session['users']
+        self.accepted    = set()
+        self._message_id: int | None = None  # se rellena al enviar el embed final
+
+    @discord.ui.button(label="⚔️ Revancha", style=discord.ButtonStyle.danger)
+    async def rematch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.users:
+            return await interaction.response.send_message("Solo los participantes pueden pedir revancha.", ephemeral=True)
+        self.accepted.add(interaction.user.id)
+        if len(self.accepted) < 2:
+            other_id = next(x for x in self.users if x != interaction.user.id)
+            await interaction.response.send_message(
+                f"Revancha solicitada. Esperando a <@{other_id}>…", ephemeral=True
+            )
+            return
+        # Ambos aceptaron — iniciar nueva sesión con las mismas cartas
+        self.stop()
+        # Usar un key único (igual que prepare_battle usa interaction.id) para evitar colisiones
+        key = f"{self.guild_id}:{self.users[0]}:{self.users[1]}:{interaction.id}"
+        self.cog.battles[key] = {
+            'guild_id':   self.guild_id,
+            'channel_id': self.channel_id,
+            'users':      self.users,
+            'selected':   dict(self.cards_used),
+            'started':    False,
+            '_rematch_message_id': self._message_id,  # usado por begin_battle
+        }
+        await interaction.response.defer()
+        await self.cog.begin_battle_rematch(interaction, key)
+
+    async def on_timeout(self):
+        # Deshabilitar el botón cuando expira
+        for item in self.children:
+            item.disabled = True
+        self.stop()
 
 class BattleView(discord.ui.View):
     def __init__(self,cog,key):
@@ -1844,12 +1895,54 @@ class CardsCog(commands.Cog):
             if not row: return
             stats=combat_stats(row); hp=max(1,stat_num(stats,'HP',BATTLE_MAX_HP))
             players[user_id]={"id":user_id,"mention":f"<@{user_id}>","card":row,"max_hp":hp,"hp":hp,"energy":1,"defending":False,"states":{},"last_breath_used":False}
-        turn=max(players,key=lambda uid:stat_num(combat_stats(players[uid]['card']),'Speed',0))
+        # El jugador con mayor Speed empieza con 2 de energía en lugar de 1
+        speeds={uid:stat_num(combat_stats(players[uid]['card']),'Speed',0) for uid in players}
+        turn=max(speeds,key=lambda uid:speeds[uid])
+        if speeds[session['users'][0]]!=speeds[session['users'][1]]:
+            players[turn]['energy']=2
         session.update({'started':True,'players':players,'turn':turn,'turns':0})
         rows=[players[x]['card'] for x in session['users']]
         session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],rows[0]['slug'],rows[1]['slug'])
-        await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! Mueve primero el más rápido."),view=BattleView(self,key))
+        await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! El más rápido empieza con 2 ⚡."),view=BattleView(self,key))
         session['battle_message_id']=interaction.message.id
+
+    async def begin_battle_rematch(self, interaction, key):
+        """Como begin_battle pero edita el mensaje existente del canal en lugar de interaction.message."""
+        session = self.battles.get(key)
+        if not session or session.get('started'): return
+        players = {}
+        for user_id in session['users']:
+            row = await db.fetchrow("SELECT * FROM card_catalog WHERE slug=$1 AND active=TRUE", session['selected'].get(user_id))
+            if not row: return
+            stats = combat_stats(row); hp = max(1, stat_num(stats, 'HP', BATTLE_MAX_HP))
+            players[user_id] = {"id": user_id, "mention": f"<@{user_id}>", "card": row, "max_hp": hp, "hp": hp, "energy": 1, "defending": False, "states": {}, "last_breath_used": False}
+        speeds = {uid: stat_num(combat_stats(players[uid]['card']), 'Speed', 0) for uid in players}
+        turn = max(speeds, key=lambda uid: speeds[uid])
+        if speeds[session['users'][0]] != speeds[session['users'][1]]:
+            players[turn]['energy'] = 2
+        session.update({'started': True, 'players': players, 'turn': turn, 'turns': 0})
+        rows = [players[x]['card'] for x in session['users']]
+        session['db_id'] = await db.fetchval(
+            "INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            session['guild_id'], session['channel_id'], *session['users'], rows[0]['slug'], rows[1]['slug']
+        )
+        # Editar el mensaje original del canal (guardado en _rematch_message_id por end_battle)
+        guild   = self.bot.get_guild(session['guild_id'])
+        channel = guild.get_channel(session['channel_id']) if guild else None
+        msg_id  = session.get('_rematch_message_id')
+        if channel and msg_id:
+            msg = await channel.get_partial_message(msg_id).edit(
+                embed=self.battle_embed(session, "¡Revancha! El más rápido empieza con 2 ⚡."),
+                view=BattleView(self, key)
+            )
+            session['battle_message_id'] = msg.id
+        else:
+            # Fallback: usar followup si no tenemos el canal/mensaje
+            msg = await interaction.followup.send(
+                embed=self.battle_embed(session, "¡Revancha! El más rápido empieza con 2 ⚡."),
+                view=BattleView(self, key)
+            )
+            session['battle_message_id'] = msg.id
 
     def battle_embed(self,session,message):
         p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
@@ -1929,7 +2022,9 @@ class CardsCog(commands.Cog):
                 if blocked: damage=max(1,damage//2); enemy['defending']=False; blocked=False
             if blocked: enemy['defending']=False
             enemy['hp']=max(0,enemy['hp']-damage); applied=''
-            if effect in BATTLE_STATES and chance and random.randint(1,100)<=chance: enemy['states'][effect]=max(1,duration); applied=effect
+            if effect in BATTLE_STATES and chance and random.randint(1,100)<=chance:
+                _target=actor if effect in ('Escudo','Regeneración') else enemy
+                _target['states'][effect]=max(1,duration); applied=effect
             # ── Pasiva del actor: se activa al atacar ──────────────────────────
             p_stats=stats; p_name=str(p_stats.get('Pasiva','')).strip()
             if p_name and p_name!='—':
@@ -1942,7 +2037,8 @@ class CardsCog(commands.Cog):
                     enemy['hp']=max(0,enemy['hp']-p_real)
                     passive_msg_parts.append(f"+{p_real} daño de pasiva")
                 if p_effect in BATTLE_STATES and p_chance and random.randint(1,100)<=p_chance:
-                    enemy['states'][p_effect]=max(1,p_dur); passive_msg_parts.append(f"aplicó {p_effect}")
+                    _p_target=actor if p_effect in ('Escudo','Regeneración') else enemy
+                    _p_target['states'][p_effect]=max(1,p_dur); passive_msg_parts.append(f"aplicó {p_effect}")
                 if passive_msg_parts:
                     message_suffix=f" *(Pasiva — {p_name}: {', '.join(passive_msg_parts)})*"
                 else:
@@ -1968,8 +2064,8 @@ class CardsCog(commands.Cog):
                     player['hp']=max(0,player['hp']-3); state_msgs.append(f"{player['mention']} recibió 3 de daño por {state}.")
                 elif state=='Regeneración':
                     player['hp']=min(player['max_hp'],player['hp']+5); state_msgs.append(f"{player['mention']} regeneró 5 HP.")
-                # Silencio y Aturdimiento se decrementan aquí (ya se aplicó el efecto arriba para Aturdimiento)
-                # Escudo y Lento ya se decrementan inline
+                # Escudo y Lento ya se decrementan inline al aplicarse; no volver a decrementar aquí
+                # Aturdimiento se decrementa al inicio del turno del afectado
                 if state not in ('Escudo','Lento'):
                     player['states'][state]-=1
                     if player['states'][state]<=0: del player['states'][state]
@@ -1990,5 +2086,12 @@ class CardsCog(commands.Cog):
         if not session: return
         loser_id=next(x for x in session['users'] if x!=winner_id)
         await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message}),session['db_id'])
-        await interaction.edit_original_response(embed=self.battle_embed(session,message+"\n\n🏆 Pelea terminada."),view=None)
-        self.battles.pop(key,None)
+        # ── Recompensa: 100 Abo Coins al ganador (constante global BATTLE_REWARD) ─
+        await ensure_wallet(session['guild_id'],winner_id)
+        await db.execute("UPDATE card_wallets SET coins=coins+$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
+        reward_msg=f"\n\n🏆 Pelea terminada. <@{winner_id}> gana **+{coins_text(BATTLE_REWARD)} Abo Coins**."
+        final_embed=self.battle_embed(session,message+reward_msg)
+        rematch_view=RematchView(self,session,winner_id,loser_id)
+        self.battles.pop(key,None)  # borrar ANTES del await para evitar reuso, session ya está en local
+        msg=await interaction.edit_original_response(embed=final_embed,view=rematch_view)
+        rematch_view._message_id=msg.id  # guardar para que begin_battle_rematch pueda editar el mismo mensaje
