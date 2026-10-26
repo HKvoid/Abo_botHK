@@ -209,6 +209,8 @@ CREATE TABLE IF NOT EXISTS card_inventory (
     PRIMARY KEY (guild_id, user_id, card_slug)
 );
 CREATE INDEX IF NOT EXISTS idx_card_inventory_user ON card_inventory (guild_id, user_id, quantity DESC);
+ALTER TABLE card_inventory ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_card_inventory_fav ON card_inventory (guild_id, user_id, is_favorite) WHERE is_favorite = TRUE;
 
 CREATE TABLE IF NOT EXISTS card_market_listings (
     id BIGSERIAL PRIMARY KEY,
