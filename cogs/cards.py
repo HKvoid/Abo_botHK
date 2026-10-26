@@ -407,7 +407,11 @@ def _market_header(rows, page: int) -> str:
 
 async def _market_seller_names(rows, guild):
     """Añade nombres legibles sin crear menciones en el mensaje del mercado."""
-    for row in rows:
+    for index, row in enumerate(rows):
+        # asyncpg.Record no permite asignaciones directas; usamos un dict para
+        # conservar la fila y añadir el nombre legible del vendedor.
+        row = dict(row)
+        rows[index] = row
         member = guild.get_member(row["seller_id"]) if guild else None
         if member is None and guild:
             try:
