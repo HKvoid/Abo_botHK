@@ -71,7 +71,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if isinstance(error, app_commands.CheckFailure):
         msg = "No tienes permiso para usar este comando, lo siento 🔒"
     else:
-        log.error("[Command Error] %s: %s", interaction.command, error)
+        log.exception("[Command Error] %s: %s", interaction.command, error)
         msg = "Algo salió mal ejecutando el comando; inténtalo de nuevo en un momento 😅"
     try:
         embed = discord.Embed(title="Abo encontró un problema", description=msg, color=0xED4245)
