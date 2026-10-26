@@ -63,6 +63,10 @@ EMOJI_BY_SLUG = {
     "abomaid": ("MAIDABO", "1560743731051630773"),
     "abosaurio": ("ABOSAURIO", "1560743712521199758"),
     "abojama": ("ABOJAMA", "1560743687561027624"),
+    "encebollabo": ("ENCEBOLLABO", "1564292065678856374"),
+    "abocado": ("ABOCADO", "1564292138915594260"),
+    "sandiabo": ("SANDIABO", "1564292200597159997"),
+    "abo_jedi": ("ABOJEDI", "1564292246432514199"),
 }
 
 RARITY_EMOJI = {"Común": "⚪", "Rara": "🔵", "Épica": "🟣", "Legendaria": "🟡"}
@@ -85,6 +89,10 @@ CATALOG = [
     ("abojama", "Abojama", "Común", "abojama.png", 42, 100),
     ("abomaid", "Abomaid", "Rara", "abomaid.png", 22, 250),
     ("abosaurio", "Abosaurio", "Épica", "abosaurio.png", 10, 500),
+    ("encebollabo", "Encebollabo", "Común", "encebollabo.png", 42, 100),
+    ("abocado", "Abocado", "Común", "abocado.png", 42, 100),
+    ("sandiabo", "Sandiabo", "Rara", "sandiabo.png", 22, 250),
+    ("abo_jedi", "Abo Jedi", "Legendaria", "abo_jedi.png", 4, 1000),
 ]
 
 
