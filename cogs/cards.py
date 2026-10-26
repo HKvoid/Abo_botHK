@@ -387,27 +387,19 @@ class CardService:
 MARKET_PAGE_SIZE = 5
 
 
-def _market_embed(rows, page: int) -> tuple[discord.Embed, int]:
+def _market_header(rows, page: int) -> str:
     total_pages = max(1, (len(rows) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
-    chunk = rows[page * MARKET_PAGE_SIZE:(page + 1) * MARKET_PAGE_SIZE]
-    embed = discord.Embed(title="Mercado de Abo Cards 🏪", color=0x5865F2)
-    if not chunk:
-        embed.description = "El mercado está vacío."
-    for index, row in enumerate(chunk, 1):
-        embed.add_field(
-            name=f"{card_emoji(row)} **{index}. {row['name']}** · #{row['id']}",
-            value=(
-                f"**{row['rarity']}** · **×{row['remaining']}** disponibles\n"
-                f"🪙 **{coins_text(row['price_each'])}** c/u · <@{row['seller_id']}>"
-            ),
-            inline=False,
-        )
-    embed.set_footer(text=f"Página {page + 1}/{total_pages} · Usa los botones de abajo para comprar")
-    return embed, total_pages
+    return (
+        "## Mercado de Abo Cards 🏪\n"
+        "Compra cada publicación con el botón que aparece dentro de su propia tarjeta.\n"
+        f"Página **{page + 1}/{total_pages}**"
+    )
 
 
-class MarketView(discord.ui.View):
+class MarketView(discord.ui.LayoutView):
+    """Mercado en Components V2: cada botón es accesorio de su propia sección."""
+
     def __init__(self, rows, page: int = 0):
         super().__init__(timeout=180)
         self.rows = rows
@@ -418,28 +410,39 @@ class MarketView(discord.ui.View):
         self.clear_items()
         total_pages = max(1, (len(self.rows) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
         chunk = self.rows[self.page * MARKET_PAGE_SIZE:(self.page + 1) * MARKET_PAGE_SIZE]
+        children = [discord.ui.TextDisplay(_market_header(self.rows, self.page))]
+
+        if not chunk:
+            children.append(discord.ui.TextDisplay("El mercado está vacío."))
         for index, row in enumerate(chunk, 1):
             buy = discord.ui.Button(
-                label=f"{index}. {row['name'][:70]}",
+                label="Comprar",
                 emoji="🛒",
                 style=discord.ButtonStyle.success,
                 custom_id=f"market_buy:{row['id']}",
-                row=(index - 1) // 2,
             )
             buy.callback = self._buy_callback(row['id'])
-            self.add_item(buy)
+            details = discord.ui.TextDisplay(
+                f"### {card_emoji(row)} {index}. {row['name']} · #{row['id']}\n"
+                f"**{row['rarity']}** · **×{row['remaining']}** disponibles\n"
+                f"🪙 **{coins_text(row['price_each'])}** c/u · <@{row['seller_id']}>"
+            )
+            children.append(discord.ui.Section(details, accessory=buy))
+            if index < len(chunk):
+                children.append(discord.ui.Separator())
+
         prev_btn = discord.ui.Button(
             label="Anterior", emoji="◀️", style=discord.ButtonStyle.secondary,
-            disabled=self.page <= 0, custom_id="market_prev", row=4,
+            disabled=self.page <= 0, custom_id="market_prev",
         )
         next_btn = discord.ui.Button(
             label="Siguiente", emoji="▶️", style=discord.ButtonStyle.primary,
-            disabled=self.page >= total_pages - 1, custom_id="market_next", row=4,
+            disabled=self.page >= total_pages - 1, custom_id="market_next",
         )
         prev_btn.callback = self._prev_callback()
         next_btn.callback = self._next_callback()
-        self.add_item(prev_btn)
-        self.add_item(next_btn)
+        children.extend((discord.ui.Separator(), discord.ui.ActionRow(prev_btn, next_btn)))
+        self.add_item(discord.ui.Container(*children, accent_color=0x5865F2))
 
     def _buy_callback(self, listing_id):
         async def callback(interaction: discord.Interaction):
@@ -464,8 +467,7 @@ class MarketView(discord.ui.View):
         async def callback(interaction: discord.Interaction):
             self.page = max(0, self.page - 1)
             self._build()
-            embed, _ = _market_embed(self.rows, self.page)
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(view=self)
         return callback
 
     def _next_callback(self):
@@ -473,8 +475,7 @@ class MarketView(discord.ui.View):
             total_pages = max(1, (len(self.rows) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
             self.page = min(total_pages - 1, self.page + 1)
             self._build()
-            embed, _ = _market_embed(self.rows, self.page)
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(view=self)
         return callback
 
 
@@ -1759,8 +1760,7 @@ class CardsCog(commands.Cog):
             return True
         if command == "mercado":
             rows = await db.fetch("SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50", message.guild.id)
-            embed, _ = _market_embed(rows, 0)
-            await message.channel.send(embed=embed, view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True)); return True
+            await message.channel.send(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True)); return True
         if command == "ranking_cartas":
             rows = await db.fetch("SELECT i.user_id,SUM(i.quantity*c.base_value)::BIGINT AS value,SUM(i.quantity)::BIGINT AS total,COUNT(*)::INT AS unique_cards FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.quantity>0 GROUP BY i.user_id ORDER BY value DESC,total DESC LIMIT 10", message.guild.id)
             lines = []
@@ -1930,36 +1930,39 @@ class CardsCog(commands.Cog):
 
         RARITY_COLOR = {"Común": 0x95A5A6, "Rara": 0x3498DB, "Épica": 0x9B59B6, "Legendaria": 0xF1C40F}
 
-        def make_shop_embed() -> discord.Embed:
-            embed = discord.Embed(title="🏬 Tienda de Abo", color=0xF1C40F)
-            for index, card in enumerate(shop_cards, 1):
-                price = card["base_value"] * NPC_MARKUP
-                embed.add_field(
-                    name=f"{card_emoji(card)} **{index}. {card['name']}**",
-                    value=f"**{card['rarity']}**\n🪙 **{coins_text(price)} Abo Coins**",
-                    inline=False,
-                )
-            embed.set_footer(
-                text=f"💰 Saldo: {coins_text(wallet_coins)} Abo Coins  ·  "
-                     f"🔄 Rota en {hours_left}h {mins_left}m · Usa los botones de abajo para comprar"
-            )
-            return embed
-
-        class ShopView(discord.ui.View):
+        class ShopView(discord.ui.LayoutView):
             def __init__(self):
                 super().__init__(timeout=120)
+                self._build()
+
+            def _build(self):
+                self.clear_items()
+                children = [discord.ui.TextDisplay("## 🏬 Tienda de Abo")]
                 for index, card in enumerate(shop_cards, 1):
                     price = card["base_value"] * NPC_MARKUP
                     button = discord.ui.Button(
-                        label=f"{index}. {card['name'][:70]}",
+                        label="Comprar",
                         emoji="🛍️",
                         style=discord.ButtonStyle.success if wallet_coins >= price else discord.ButtonStyle.secondary,
                         disabled=wallet_coins < price,
                         custom_id=f"shop_buy:{card['slug']}",
-                        row=(index - 1) // 2,
                     )
                     button.callback = self._make_callback(card, price)
-                    self.add_item(button)
+                    details = discord.ui.TextDisplay(
+                        f"### {card_emoji(card)} {index}. {card['name']}\n"
+                        f"**{card['rarity']}**\n"
+                        f"🪙 **{coins_text(price)} Abo Coins**"
+                    )
+                    children.append(discord.ui.Section(details, accessory=button))
+                    if index < len(shop_cards):
+                        children.append(discord.ui.Separator())
+                children.append(
+                    discord.ui.TextDisplay(
+                        f"💰 Saldo: **{coins_text(wallet_coins)} Abo Coins** · "
+                        f"🔄 Rota en **{hours_left}h {mins_left}m**"
+                    )
+                )
+                self.add_item(discord.ui.Container(*children, accent_color=0xF1C40F))
 
             def _make_callback(self, card, price):
                 async def callback(inter: discord.Interaction):
@@ -1992,7 +1995,7 @@ class CardsCog(commands.Cog):
                     )
                 return callback
 
-        await interaction.response.send_message(embed=make_shop_embed(), view=ShopView())
+        await interaction.response.send_message(view=ShopView())
 
 
     # ── MERCADO ───────────────────────────────────────────────────────────────
@@ -2017,8 +2020,7 @@ class CardsCog(commands.Cog):
     @app_commands.guild_only()
     async def mercado(self, interaction: discord.Interaction):
         rows = await db.fetch("""SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50""", interaction.guild_id)
-        embed, _ = _market_embed(rows, 0)
-        await interaction.response.send_message(embed=embed, view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
+        await interaction.response.send_message(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
 
     @app_commands.command(name="mercado_cancelar", description="Retira una publicación propia y recupera las cartas")
     @app_commands.guild_only()
