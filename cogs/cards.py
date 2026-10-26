@@ -397,6 +397,19 @@ def _market_header(rows, page: int) -> str:
     )
 
 
+async def _market_seller_names(rows, guild):
+    """Añade nombres legibles sin crear menciones en el mensaje del mercado."""
+    for row in rows:
+        member = guild.get_member(row["seller_id"]) if guild else None
+        if member is None and guild:
+            try:
+                member = await guild.fetch_member(row["seller_id"])
+            except (discord.NotFound, discord.HTTPException):
+                member = None
+        row["seller_name"] = member.display_name if member else "Vendedor"
+    return rows
+
+
 class MarketView(discord.ui.LayoutView):
     """Mercado en Components V2: cada botón es accesorio de su propia sección."""
 
@@ -425,7 +438,7 @@ class MarketView(discord.ui.LayoutView):
             details = discord.ui.TextDisplay(
                 f"### {card_emoji(row)} {index}. {row['name']}\n"
                 f"**{row['rarity']}** · **×{row['remaining']}** disponibles\n"
-                f"🪙 **{coins_text(row['price_each'])}** c/u · <@{row['seller_id']}>"
+                f"🪙 **{coins_text(row['price_each'])}** c/u · Vendedor: **{row.get('seller_name', 'Vendedor')}**"
             )
             children.append(discord.ui.Section(details, accessory=buy))
             if index < len(chunk):
@@ -1760,6 +1773,7 @@ class CardsCog(commands.Cog):
             return True
         if command == "mercado":
             rows = await db.fetch("SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50", message.guild.id)
+            await _market_seller_names(rows, message.guild)
             await message.channel.send(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True)); return True
         if command == "ranking_cartas":
             rows = await db.fetch("SELECT i.user_id,SUM(i.quantity*c.base_value)::BIGINT AS value,SUM(i.quantity)::BIGINT AS total,COUNT(*)::INT AS unique_cards FROM card_inventory i JOIN card_catalog c ON c.slug=i.card_slug WHERE i.guild_id=$1 AND i.quantity>0 GROUP BY i.user_id ORDER BY value DESC,total DESC LIMIT 10", message.guild.id)
@@ -2020,6 +2034,7 @@ class CardsCog(commands.Cog):
     @app_commands.guild_only()
     async def mercado(self, interaction: discord.Interaction):
         rows = await db.fetch("""SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50""", interaction.guild_id)
+        await _market_seller_names(rows, interaction.guild)
         await interaction.response.send_message(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
 
     @app_commands.command(name="mercado_cancelar", description="Retira una publicación propia y recupera las cartas")
@@ -2229,11 +2244,6 @@ class CardsCog(commands.Cog):
                 session['battle_message_id']=msg.id; return
             # ── Aplicar fórmula según tipo de daño ─────────────────────────────
             enemy_stats=combat_stats(enemy['card']); defense=stat_num(enemy_stats,'DEF',0)
-            # ── Escudo: absorbe daño plano antes de aplicar el golpe ───────────
-            if 'Escudo' in enemy['states']:
-                shield_block=min(damage,10); damage=max(0,damage-shield_block)
-                enemy['states']['Escudo']-=1
-                if enemy['states']['Escudo']<=0: del enemy['states']['Escudo']
             blocked=enemy['defending']
             if damage_type=='Porcentual':
                 raw=max(1,round(enemy['max_hp']*damage/100))
@@ -2247,6 +2257,11 @@ class CardsCog(commands.Cog):
                 damage=max(1,damage-defense//2)
                 if blocked: damage=max(1,damage//2); enemy['defending']=False; blocked=False
             if blocked: enemy['defending']=False
+            # ── Escudo: anula el 99% del daño final, sin importar su tipo ──────
+            if 'Escudo' in enemy['states']:
+                damage=max(1,(damage+99)//100)
+                enemy['states']['Escudo']-=1
+                if enemy['states']['Escudo']<=0: del enemy['states']['Escudo']
             enemy['hp']=max(0,enemy['hp']-damage); applied=''
             if effect in BATTLE_STATES and chance and random.randint(1,100)<=chance:
                 _target=actor if effect in ('Escudo','Regeneración') else enemy
