@@ -391,12 +391,16 @@ def _market_embed(rows, page: int) -> tuple[discord.Embed, int]:
     total_pages = max(1, (len(rows) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
     chunk = rows[page * MARKET_PAGE_SIZE:(page + 1) * MARKET_PAGE_SIZE]
-    lines = [
-        f"**#{r['id']}** · {card_emoji(r)} **{r['name']}** ({r['rarity']}) · ×{r['remaining']} · **{coins_text(r['price_each'])}** c/u · <@{r['seller_id']}>"
-        for r in chunk
-    ]
-    description = "\n".join(lines) or "El mercado está vacío."
-    embed = notice("Mercado de Abo Cards 🏪", description + "\n\nUsa los botones para comprar.")
+    embed = discord.Embed(title="Mercado de Abo Cards 🏪", color=0x5865F2)
+    if not chunk:
+        embed.description = "El mercado está vacío."
+    for r in chunk:
+        name_line = card_emoji(r) + " **" + r['name'] + "**  ·  #" + str(r['id'])
+        value_line = (
+            "**" + r['rarity'] + "**  ·  ×" + str(r['remaining']) + " disponibles\n"
+            "🪙 **" + coins_text(r['price_each']) + "** c/u  ·  <@" + str(r['seller_id']) + ">"
+        )
+        embed.add_field(name=name_line, value=value_line, inline=False)
     embed.set_footer(text=f"Página {page + 1}/{total_pages}")
     return embed, total_pages
 
@@ -412,17 +416,20 @@ class MarketView(discord.ui.View):
         self.clear_items()
         total_pages = max(1, (len(self.rows) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
         chunk = self.rows[self.page * MARKET_PAGE_SIZE:(self.page + 1) * MARKET_PAGE_SIZE]
-        for row in chunk:
+        # Botón "Comprar" en su propia fila (row 0-4), alineado con el field de la carta
+        for idx, row in enumerate(chunk):
             buy = discord.ui.Button(
-                label=f"#{row['id']} {row['name']} — {coins_text(row['price_each'])} 🪙",
+                label="Comprar",
                 emoji="🛒",
                 style=discord.ButtonStyle.success,
-                custom_id=f"market_buy:{row['id']}"
+                custom_id=f"market_buy:{row['id']}",
+                row=idx,
             )
             buy.callback = self._buy_callback(row["id"])
             self.add_item(buy)
-        prev_btn = discord.ui.Button(label="◀️", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, custom_id="market_prev")
-        next_btn = discord.ui.Button(label="▶️", style=discord.ButtonStyle.primary, disabled=self.page >= total_pages - 1, custom_id="market_next")
+        # Paginación siempre en la última fila (4)
+        prev_btn = discord.ui.Button(label="◀️", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, custom_id="market_prev", row=4)
+        next_btn = discord.ui.Button(label="▶️", style=discord.ButtonStyle.primary, disabled=self.page >= total_pages - 1, custom_id="market_next", row=4)
         prev_btn.callback = self._prev_callback()
         next_btn.callback = self._next_callback()
         self.add_item(prev_btn)
@@ -1933,15 +1940,16 @@ class CardsCog(commands.Cog):
                     price = card["base_value"] * NPC_MARKUP
                     affordable = wallet_coins >= price
                     btn = discord.ui.Button(
-                        label=f"{idx + 1}. {card['name']}",
-                        emoji="🪙",
+                        label="Comprar",
+                        emoji="🛍️",
                         style=discord.ButtonStyle.success if affordable else discord.ButtonStyle.secondary,
                         disabled=not affordable,
+                        row=idx,           # cada botón en su propia fila → alineado con el field
                     )
-                    btn.callback = self_._make_callback(card, price, idx)
+                    btn.callback = self_._make_callback(card, price)
                     self_.add_item(btn)
 
-            def _make_callback(self_, card, price, idx):
+            def _make_callback(self_, card, price):
                 async def callback(inter: discord.Interaction):
                     async with db._pool().acquire() as conn:
                         async with conn.transaction():
