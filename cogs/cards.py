@@ -1454,82 +1454,6 @@ class CardsCog(commands.Cog):
         view = CollectionView(interaction.user.id, target.display_name, rows, filtro or "") if pages > 1 else None
         await interaction.response.send_message(embed=embed, view=view)
 
-    @app_commands.command(name="album", description="Muestra tu álbum visual con todas las cartas del catálogo")
-    @app_commands.guild_only()
-    @app_commands.describe(usuario="Miembro cuyo álbum consultar")
-    async def album(self, interaction: discord.Interaction, usuario: discord.Member | None = None):
-        target = usuario or interaction.user
-        # Catálogo completo ordenado por rareza + nombre
-        catalog = await db.fetch(
-            """SELECT c.slug,c.name,c.rarity,c.emoji_name,c.emoji_id,
-                      COALESCE(i.quantity,0)::int AS quantity
-               FROM card_catalog c
-               LEFT JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2
-               WHERE c.active=TRUE
-               ORDER BY CASE c.rarity
-                   WHEN 'Legendaria' THEN 1 WHEN 'Épica' THEN 2
-                   WHEN 'Rara' THEN 3 ELSE 4 END, c.name""",
-            interaction.guild_id, target.id
-        )
-        if not catalog:
-            return await interaction.response.send_message(embed=notice("Álbum vacío", "Todavía no hay cartas en el catálogo."), ephemeral=True)
-        owned = sum(1 for r in catalog if r["quantity"] > 0)
-        total = len(catalog)
-        rarity_icons = {"Legendaria": "🟡", "Épica": "🟣", "Rara": "🔵", "Común": "⚪"}
-        lines = []
-        for r in catalog:
-            if r["quantity"] > 0:
-                icon = card_emoji(r)
-                lines.append(f"{icon} **{r['name']}** ×{r['quantity']}")
-            else:
-                lines.append(f"{rarity_icons.get(r['rarity'], '⬛')} ~~{r['name']}~~")
-        per_page = 15
-        pages_data = [lines[i:i + per_page] for i in range(0, len(lines), per_page)]
-        total_pages = len(pages_data)
-
-        def make_embed(page: int) -> discord.Embed:
-            chunk = pages_data[page]
-            embed = notice(
-                f"Álbum de {target.display_name} 📖",
-                "\n".join(chunk)
-            )
-            embed.add_field(name="Obtenidas", value=f"{owned}/{total}", inline=True)
-            embed.add_field(name="Completado", value=f"{owned * 100 // total}%", inline=True)
-            embed.set_footer(text=f"Página {page + 1}/{total_pages} · ⬛ = no obtenida")
-            return embed
-
-        if total_pages == 1:
-            return await interaction.response.send_message(embed=make_embed(0))
-
-        class AlbumView(discord.ui.View):
-            def __init__(self_, page: int = 0):
-                super().__init__(timeout=180)
-                self_.page = page
-                self_.owner_id = interaction.user.id
-                self_._sync()
-
-            def _sync(self_):
-                self_.previous.disabled = self_.page <= 0
-                self_.next.disabled = self_.page >= total_pages - 1
-
-            async def interaction_check(self_, inter: discord.Interaction) -> bool:
-                if inter.user.id != self_.owner_id:
-                    await inter.response.send_message("Solo quien abrió el álbum puede pasar páginas.", ephemeral=True)
-                    return False
-                return True
-
-            @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary)
-            async def previous(self_, inter: discord.Interaction, _btn):
-                self_.page -= 1; self_._sync()
-                await inter.response.edit_message(embed=make_embed(self_.page), view=self_)
-
-            @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
-            async def next(self_, inter: discord.Interaction, _btn):
-                self_.page += 1; self_._sync()
-                await inter.response.edit_message(embed=make_embed(self_.page), view=self_)
-
-        await interaction.response.send_message(embed=make_embed(0), view=AlbumView())
-
     @app_commands.command(name="sets", description="Muestra los sets de Abo Cards")
     @app_commands.guild_only()
     async def sets(self, interaction: discord.Interaction):
@@ -1643,10 +1567,10 @@ class CardsCog(commands.Cog):
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
             "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets", "profile": "perfil",
-            "album": "album", "favorita": "favorita", "tienda": "tienda",
+            "favorita": "favorita", "tienda": "tienda",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas", "comparar", "album", "favorita", "tienda"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cartas", "ayudacartas", "comparar", "favorita", "tienda"}
         if command not in quick:
             return False
         if command == "ayudacartas":
@@ -1943,23 +1867,22 @@ class CardsCog(commands.Cog):
     @app_commands.command(name="tienda", description="Tienda del NPC Abo — 4 cartas rotan cada 24 horas")
     @app_commands.guild_only()
     async def tienda_cmd(self, interaction: discord.Interaction):
-        import hashlib, math
-        # La rotación usa la fecha UTC como semilla → cambia cada 24h, es igual para todos
-        seed_str = str(interaction.guild_id) + __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d")
+        import hashlib, datetime as _dt
+        seed_str = str(interaction.guild_id) + _dt.datetime.utcnow().strftime("%Y-%m-%d")
         seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
         rng = __import__("random").Random(seed)
 
         catalog = await db.fetch(
-            "SELECT slug,name,rarity,emoji_name,emoji_id,base_value FROM card_catalog WHERE active=TRUE ORDER BY slug",
-            )
+            "SELECT slug,name,rarity,emoji_name,emoji_id,base_value,image_file FROM card_catalog WHERE active=TRUE ORDER BY slug",
+        )
         if not catalog:
-            return await interaction.response.send_message(embed=notice("Tienda cerrada", "Todavía no hay cartas en el catálogo."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=notice("Tienda cerrada", "Todavía no hay cartas en el catálogo."), ephemeral=True
+            )
 
         pool = list(catalog)
         rng.shuffle(pool)
-        # Asegurar al menos 1 Rara o superior entre los 4 slots
         rare_plus = [r for r in pool if r["rarity"] in ("Rara", "Épica", "Legendaria")]
-        commons = [r for r in pool if r["rarity"] == "Común"]
         if rare_plus:
             guaranteed = rng.choice(rare_plus)
             rest = [r for r in pool if r["slug"] != guaranteed["slug"]]
@@ -1968,70 +1891,88 @@ class CardsCog(commands.Cog):
         else:
             shop_cards = pool[:4]
 
-        # Precio NPC: base_value × 2 (tiene margen de vendedor)
         NPC_MARKUP = 2
 
         await ensure_wallet(interaction.guild_id, interaction.user.id)
         wallet_coins = await db.fetchval(
             "SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2",
-            interaction.guild_id, interaction.user.id
-        )
+            interaction.guild_id, interaction.user.id,
+        ) or 0
 
-        lines = []
-        for i, card in enumerate(shop_cards, 1):
-            price = card["base_value"] * NPC_MARKUP
-            lines.append(f"**{i}.** {card_emoji(card)} **{card['name']}** ({card['rarity']}) · **{coins_text(price)} Abo Coins**")
-
-        import datetime as _dt
         now_utc = _dt.datetime.utcnow()
-        next_rotation = (_dt.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + _dt.timedelta(days=1))
+        next_rotation = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + _dt.timedelta(days=1)
         secs_left = int((next_rotation - now_utc).total_seconds())
-        hours_left = secs_left // 3600
-        mins_left = (secs_left % 3600) // 60
+        hours_left, mins_left = secs_left // 3600, (secs_left % 3600) // 60
 
-        desc = "\n".join(lines)
-        desc += f"\n\n💰 Tu saldo: **{coins_text(wallet_coins)} Abo Coins**"
-        desc += f"\n🔄 Próxima rotación en **{hours_left}h {mins_left}m**"
-        embed = notice("Tienda de Abo 🏬", desc, 0xF1C40F)
+        RARITY_COLOR = {"Común": 0x95A5A6, "Rara": 0x3498DB, "Épica": 0x9B59B6, "Legendaria": 0xF1C40F}
+
+        def make_shop_embed(selected_idx: int | None = None) -> discord.Embed:
+            """Embed de tienda en formato lista, una entrada por carta."""
+            embed = discord.Embed(
+                title="🏬 Tienda de Abo",
+                color=0xF1C40F,
+            )
+            embed.set_footer(text=f"💰 Saldo: {coins_text(wallet_coins)} Abo Coins  ·  🔄 Rota en {hours_left}h {mins_left}m")
+
+            for i, card in enumerate(shop_cards, 1):
+                price = card["base_value"] * NPC_MARKUP
+                selected_mark = " ◀" if i - 1 == selected_idx else ""
+                name_line = f"{card_emoji(card)} **{card['name']}**{selected_mark}"
+                value_line = (
+                    "**" + card["rarity"] + "**\n"
+                    "🪙 **" + coins_text(price) + "**"
+                )
+                embed.add_field(name=name_line, value=value_line, inline=False)
+
+            return embed
 
         class ShopView(discord.ui.View):
             def __init__(self_):
                 super().__init__(timeout=120)
-                for idx, card in enumerate(shop_cards, 1):
+                for idx, card in enumerate(shop_cards):
                     price = card["base_value"] * NPC_MARKUP
+                    affordable = wallet_coins >= price
                     btn = discord.ui.Button(
-                        label=f"{idx}. {card['name']} — {coins_text(price)} 🪙",
-                        emoji="🛍️",
-                        style=discord.ButtonStyle.primary,
+                        label=f"{idx + 1}. {card['name']}",
+                        emoji="🪙",
+                        style=discord.ButtonStyle.success if affordable else discord.ButtonStyle.secondary,
+                        disabled=not affordable,
                     )
-                    btn.callback = self_._make_callback(card, price)
+                    btn.callback = self_._make_callback(card, price, idx)
                     self_.add_item(btn)
 
-            def _make_callback(self_, card, price):
+            def _make_callback(self_, card, price, idx):
                 async def callback(inter: discord.Interaction):
                     async with db._pool().acquire() as conn:
                         async with conn.transaction():
                             w = await conn.fetchrow(
                                 "SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
-                                inter.guild_id, inter.user.id
+                                inter.guild_id, inter.user.id,
                             )
                             if not w or w["coins"] < price:
                                 return await inter.response.send_message(
-                                    embed=notice("Saldo insuficiente", f"Necesitas **{coins_text(price)} Abo Coins** y tienes **{coins_text(w['coins'] if w else 0)}**.", 0xED4245),
+                                    embed=notice(
+                                        "Saldo insuficiente",
+                                        f"Necesitas **{coins_text(price)} Abo Coins** y tienes **{coins_text(w['coins'] if w else 0)}**.",
+                                        0xED4245,
+                                    ),
                                     ephemeral=True,
                                 )
                             await conn.execute(
                                 "UPDATE card_wallets SET coins=coins-$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",
-                                price, inter.guild_id, inter.user.id
+                                price, inter.guild_id, inter.user.id,
                             )
                             await add_card(conn, inter.guild_id, inter.user.id, card["slug"])
                     await inter.response.send_message(
-                        embed=notice("¡Compra realizada! 🛍️", f"Compraste {card_emoji(card)} **{card['name']}** por **{coins_text(price)} Abo Coins**."),
+                        embed=notice(
+                            "¡Compra realizada! 🛍️",
+                            f"Compraste {card_emoji(card)} **{card['name']}** por **{coins_text(price)} Abo Coins**.",
+                        ),
                         ephemeral=True,
                     )
                 return callback
 
-        await interaction.response.send_message(embed=embed, view=ShopView())
+        await interaction.response.send_message(embed=make_shop_embed(), view=ShopView())
 
     # ── MERCADO ───────────────────────────────────────────────────────────────
 
