@@ -1954,7 +1954,7 @@ class CardsCog(commands.Cog):
 
         class ShopView(discord.ui.LayoutView):
             def __init__(self):
-                super().__init__(timeout=120)
+                super().__init__(timeout=900)
                 self._build()
 
             def _build(self):
@@ -1965,8 +1965,7 @@ class CardsCog(commands.Cog):
                     button = discord.ui.Button(
                         label="Comprar",
                         emoji="🛍️",
-                        style=discord.ButtonStyle.success if wallet_coins >= price else discord.ButtonStyle.secondary,
-                        disabled=wallet_coins < price,
+                        style=discord.ButtonStyle.success,
                         custom_id=f"shop_buy:{card['slug']}",
                     )
                     button.callback = self._make_callback(card, price)
@@ -1988,6 +1987,9 @@ class CardsCog(commands.Cog):
 
             def _make_callback(self, card, price):
                 async def callback(inter: discord.Interaction):
+                    # Confirmar inmediatamente la interacción para no superar
+                    # el límite de 3 segundos mientras se completa la compra.
+                    await inter.response.defer(ephemeral=True)
                     async with db._pool().acquire() as conn:
                         async with conn.transaction():
                             wallet = await conn.fetchrow(
@@ -1995,7 +1997,7 @@ class CardsCog(commands.Cog):
                                 inter.guild_id, inter.user.id,
                             )
                             if not wallet or wallet["coins"] < price:
-                                return await inter.response.send_message(
+                                return await inter.followup.send(
                                     embed=notice(
                                         "Saldo insuficiente",
                                         f"Necesitas **{coins_text(price)} Abo Coins** y tienes **{coins_text(wallet['coins'] if wallet else 0)}**.",
@@ -2008,7 +2010,7 @@ class CardsCog(commands.Cog):
                                 price, inter.guild_id, inter.user.id,
                             )
                             await add_card(conn, inter.guild_id, inter.user.id, card["slug"])
-                    await inter.response.send_message(
+                    await inter.followup.send(
                         embed=notice(
                             "¡Compra realizada! 🛍️",
                             f"Compraste {card_emoji(card)} **{card['name']}** por **{coins_text(price)} Abo Coins**.",
