@@ -423,7 +423,7 @@ class MarketView(discord.ui.LayoutView):
             )
             buy.callback = self._buy_callback(row['id'])
             details = discord.ui.TextDisplay(
-                f"### {card_emoji(row)} {index}. {row['name']} · #{row['id']}\n"
+                f"### {card_emoji(row)} {index}. {row['name']}\n"
                 f"**{row['rarity']}** · **×{row['remaining']}** disponibles\n"
                 f"🪙 **{coins_text(row['price_each'])}** c/u · <@{row['seller_id']}>"
             )
@@ -2013,8 +2013,8 @@ class CardsCog(commands.Cog):
                 if owned < cantidad:
                     return await interaction.response.send_message(embed=notice("No tienes suficientes copias", f"Posees **×{owned}** de {row['name']}.", 0xED4245), ephemeral=True)
                 await connection.execute("UPDATE card_inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND card_slug=$4", cantidad, interaction.guild_id, interaction.user.id, row["slug"])
-                listing = await connection.fetchrow("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5) RETURNING id", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
-        await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una.\nID de publicación: **#{listing['id']}**"), ephemeral=True)
+                await connection.execute("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5)", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
+        await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una."), ephemeral=True)
 
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
@@ -2037,7 +2037,7 @@ class CardsCog(commands.Cog):
 
     @app_commands.command(name="mercado_comprar", description="Compra una carta publicada en el mercado")
     @app_commands.guild_only()
-    @app_commands.describe(publicacion="ID de publicación", cantidad="Cantidad a comprar")
+    @app_commands.describe(publicacion="Publicación", cantidad="Cantidad a comprar")
     async def mercado_comprar(self, interaction: discord.Interaction, publicacion: int, cantidad: int = 1):
         if cantidad < 1:
             return await interaction.response.send_message(embed=notice("Cantidad inválida", "La cantidad debe ser positiva.", 0xED4245), ephemeral=True)
