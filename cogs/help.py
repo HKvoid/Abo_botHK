@@ -30,7 +30,7 @@ class HelpCog(commands.Cog):
             "`/cartas_regalar`, `/cartas_retirar`, `/cartas_saldo`, `/cartas_resetear` — Herramientas de administración\n"
             "`/mercado` — Consulta el mercado y usa botones para comprar o ver al vendedor\n"
             "`/ranking_cartas` — Ranking por valor de colección\n"
-            "`/pelea <usuario>` — Desafío carta contra carta con turnos, habilidad, defensa y estados"
+            "`/pelea <usuario>` — Duelo por turnos con equipos de 3 cartas: habilidad, defensa, cambio de carta y estados"
         ), inline=False)
         if es_staff:
             embed.add_field(name="⚠️ Warns 🔒", value=(

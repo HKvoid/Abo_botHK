@@ -15,7 +15,7 @@ from discord.ext import commands
 from core import db
 
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "cards"
-PACK_PRICE = 300
+PACK_PRICE = 175
 DAILY_BASE = 150
 PITY_RARE_LIMIT = 5
 PITY_EPIC_LIMIT = 15
@@ -645,7 +645,11 @@ def damage_num(value,default=0):
 
 def battle_line(player):
     states=", ".join(f"{key}({value})" for key,value in player["states"].items()) or "sin estados"
-    return f"**{player['mention']}** · {card_emoji(player['card'])} **{player['card']['name']}**\n❤️ {player['hp']}/{player['max_hp']} HP · ⚡ {player['energy']}/5 · {states}"
+    line=f"**{player['mention']}** · {card_emoji(player['card'])} **{player['card']['name']}**\n❤️ {player['hp']}/{player['max_hp']} HP · ⚡ {player['energy']}/5 · {states}"
+    bench=[f for f in (player.get('team') or []) if f is not player]
+    if bench:
+        line+="\n🪑 Banca: "+" · ".join(f"{f['card']['name']} "+("💀" if f['hp']<=0 else f"{f['hp']}/{f['max_hp']}") for f in bench)
+    return line
 
 class BattleChallengeView(discord.ui.View):
     def __init__(self,cog,guild_id,challenger,opponent):
@@ -659,20 +663,23 @@ class BattleChallengeView(discord.ui.View):
         if interaction.user.id!=self.opponent: return await interaction.response.send_message("Solo el usuario desafiado puede rechazar.",ephemeral=True)
         await interaction.response.edit_message(embed=notice("Pelea cancelada","El desafío fue rechazado.",0xED4245),view=None); self.stop()
 
+BATTLE_TEAM_SIZE = 3
+
 class BattleChoice(discord.ui.Select):
     def __init__(self,cog,key,user_id,rows):
         options=[discord.SelectOption(label=str(row['name'])[:100],value=row['slug'],description=str(row['rarity'])) for row in rows[:25]]
-        super().__init__(placeholder="Elige tu personaje...",options=options); self.cog=cog; self.key=key; self.user_id=user_id
+        size=min(BATTLE_TEAM_SIZE,len(options))
+        super().__init__(placeholder=f"Elige tu equipo ({size} carta{'s' if size!=1 else ''})...",min_values=size,max_values=size,options=options); self.cog=cog; self.key=key; self.user_id=user_id
     async def callback(self,interaction):
         if interaction.user.id!=self.user_id: return await interaction.response.send_message("Este selector no es para ti.",ephemeral=True)
         session=self.cog.battles.get(self.key)
         if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
-        session['selected'][self.user_id]=self.values[0]
+        session['selected'][self.user_id]=list(self.values)
         await interaction.response.defer()
         if len(session['selected'])==2:
             await self.cog.begin_battle(interaction,self.key)
         else:
-            await interaction.followup.send(f"Elegiste **{self.values[0]}**. Esperando al rival...",ephemeral=True)
+            await interaction.followup.send(f"Equipo elegido: **{', '.join(self.values)}**. Esperando al rival...",ephemeral=True)
 
 class BattleSetupView(discord.ui.View):
     def __init__(self,cog,key,choices):
@@ -702,6 +709,36 @@ class AbilityChoiceView(discord.ui.View):
         super().__init__(timeout=30)
         self.add_item(AbilityChoice(cog,key,user_id,stats))
 
+class SwitchChoice(discord.ui.Select):
+    def __init__(self, cog, key, user_id, bench):
+        options=[discord.SelectOption(label=str(f['card']['name'])[:100], value=str(i), description=f"❤️ {f['hp']}/{f['max_hp']} HP · {f['card']['rarity']}"[:100]) for i,f in bench]
+        super().__init__(placeholder="Elige la carta que entra...", options=options)
+        self.cog=cog; self.key=key; self.user_id=user_id
+    async def callback(self, interaction):
+        session=self.cog.battles.get(self.key)
+        if not session or interaction.user.id!=session['turn']:
+            return await interaction.response.send_message("No puedes cambiar de carta en este momento.",ephemeral=True)
+        await interaction.response.defer()
+        await self.cog.battle_action(interaction,self.key,f"switch:{self.values[0]}")
+
+class SwitchChoiceView(discord.ui.View):
+    def __init__(self, cog, key, user_id, bench, message):
+        super().__init__(timeout=120)
+        self.cog=cog; self.key=key; self.message=message
+        self.add_item(SwitchChoice(cog,key,user_id,bench))
+    @discord.ui.button(label="Volver",emoji="↩️",style=discord.ButtonStyle.secondary)
+    async def back(self, interaction, button):
+        session=self.cog.battles.get(self.key)
+        if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
+        if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
+        await interaction.response.edit_message(embed=self.cog.battle_embed(session,"Elige tu acción."),view=BattleView(self.cog,self.key))
+        self.stop()
+    async def on_timeout(self):
+        session=self.cog.battles.get(self.key)
+        if not session: return
+        try: await self.message.edit(embed=self.cog.battle_embed(session,"Elige tu acción."),view=BattleView(self.cog,self.key))
+        except Exception: pass
+
 BATTLE_TURN_TIMEOUT = 420  # segundos sin acción antes de anular la pelea (7 min)
 BATTLE_REWARD = 50        # Abo Coins que gana el vencedor
 
@@ -717,7 +754,7 @@ class RematchView(discord.ui.View):
         self.winner_id   = winner_id
         self.loser_id    = loser_id
         # Guardamos las cartas usadas para la revancha
-        self.cards_used  = {uid: finished_session['players'][uid]['card']['slug']
+        self.cards_used  = {uid: [f['card']['slug'] for f in finished_session['teams'][uid]]
                             for uid in finished_session['users']}
         self.users       = finished_session['users']
         self.accepted    = set()
@@ -801,6 +838,15 @@ class BattleView(discord.ui.View):
             await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
     @discord.ui.button(label="Defender",emoji="🛡️",style=discord.ButtonStyle.secondary)
     async def defend(self,interaction,button): await self.act(interaction,"defend")
+    @discord.ui.button(label="Cambiar",emoji="🔄",style=discord.ButtonStyle.secondary)
+    async def switch(self,interaction,button):
+        session=self.cog.battles.get(self.key)
+        if not session: return await interaction.response.send_message("La pelea ya terminó.",ephemeral=True)
+        if interaction.user.id!=session['turn']: return await interaction.response.send_message("No es tu turno.",ephemeral=True)
+        actor=session['players'][session['turn']]
+        bench=[(i,f) for i,f in enumerate(session['teams'][session['turn']]) if f is not actor and f['hp']>0]
+        if not bench: return await interaction.response.send_message("No tienes más cartas disponibles para cambiar.",ephemeral=True)
+        await interaction.response.edit_message(embed=notice("🔄 Cambiar de carta","Elige qué carta entra al combate. Cambiar **consume tu turno**; la energía se conserva."),view=SwitchChoiceView(self.cog,self.key,interaction.user.id,bench,interaction.message))
     @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
     async def surrender(self,interaction,button): await self.act(interaction,"surrender")
 
@@ -2111,7 +2157,7 @@ class CardsCog(commands.Cog):
                 await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",active['id'])
             else:
                 return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo. Usa `/cancelar_pelea` si está atascada.",0xED4245),ephemeral=True)
-        await interaction.response.send_message(embed=notice("⚔️ Desafío de pelea",f"{interaction.user.mention} desafió a {usuario.mention}.\n\nAcepten para elegir un personaje de su colección."),view=BattleChallengeView(self,interaction.guild_id,interaction.user.id,usuario.id))
+        await interaction.response.send_message(embed=notice("⚔️ Desafío de pelea",f"{interaction.user.mention} desafió a {usuario.mention}.\n\nAcepten para elegir un equipo de hasta 3 cartas de su colección. Cuando una carta cae, entra la siguiente; también pueden usar 🔄 Cambiar."),view=BattleChallengeView(self,interaction.guild_id,interaction.user.id,usuario.id))
 
     @app_commands.command(name="cancelar_pelea", description="Cancela una pelea atascada de un usuario")
     @app_commands.guild_only()
@@ -2134,25 +2180,42 @@ class CardsCog(commands.Cog):
             choices.append((user_id,rows))
         key=f"{guild_id}:{user_a}:{user_b}:{interaction.id}"
         self.battles[key]={"guild_id":guild_id,"channel_id":interaction.channel_id,"users":(user_a,user_b),"selected":{}}
-        await interaction.edit_original_response(embed=notice("⚔️ Elige tu personaje",f"<@{user_a}> y <@{user_b}> deben escoger una carta."),view=BattleSetupView(self,key,choices))
+        await interaction.edit_original_response(embed=notice("⚔️ Elige tu equipo",f"<@{user_a}> y <@{user_b}> deben escoger **3 cartas** (o todas las que tengan si son menos). Sale primero la carta más rápida de tu equipo."),view=BattleSetupView(self,key,choices))
 
-    async def begin_battle(self,interaction,key):
-        session=self.battles.get(key)
-        if not session or session.get('started'): return
-        players={}
+    async def _build_battle(self,session):
+        """Crea los equipos, la carta activa de cada jugador, el turno inicial y el registro en la DB."""
+        teams={}
         for user_id in session['users']:
-            row=await db.fetchrow("SELECT * FROM card_catalog WHERE slug=$1 AND active=TRUE",session['selected'].get(user_id))
-            if not row: return
-            stats=combat_stats(row); hp=max(1,stat_num(stats,'HP',BATTLE_MAX_HP))
-            players[user_id]={"id":user_id,"mention":f"<@{user_id}>","card":row,"max_hp":hp,"hp":hp,"energy":1,"defending":False,"states":{},"last_breath_used":False}
+            slugs=session['selected'].get(user_id) or []
+            if isinstance(slugs,str): slugs=[slugs]
+            rows=await db.fetch("SELECT * FROM card_catalog WHERE slug=ANY($1::text[]) AND active=TRUE",list(slugs))
+            by_slug={r['slug']:r for r in rows}
+            team=[]
+            for slug in slugs:
+                row=by_slug.get(slug)
+                if not row: continue
+                hp=max(1,stat_num(combat_stats(row),'HP',BATTLE_MAX_HP))
+                team.append({"id":user_id,"mention":f"<@{user_id}>","card":row,"max_hp":hp,"hp":hp,"energy":1,"defending":False,"states":{},"last_breath_used":False})
+            if not team: return False
+            # La más rápida sale primero y define el orden de reemplazo
+            team.sort(key=lambda f:-stat_num(combat_stats(f['card']),'Speed',0))
+            for f in team: f['team']=team
+            teams[user_id]=team
+        players={uid:team[0] for uid,team in teams.items()}
         # El jugador con mayor Speed empieza con 2 de energía en lugar de 1
         speeds={uid:stat_num(combat_stats(players[uid]['card']),'Speed',0) for uid in players}
         turn=max(speeds,key=lambda uid:speeds[uid])
         if speeds[session['users'][0]]!=speeds[session['users'][1]]:
             players[turn]['energy']=2
-        session.update({'started':True,'players':players,'turn':turn,'turns':0})
-        rows=[players[x]['card'] for x in session['users']]
-        session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],rows[0]['slug'],rows[1]['slug'])
+        session.update({'started':True,'teams':teams,'players':players,'turn':turn,'turns':0})
+        leads=[players[x]['card'] for x in session['users']]
+        session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],leads[0]['slug'],leads[1]['slug'])
+        return True
+
+    async def begin_battle(self,interaction,key):
+        session=self.battles.get(key)
+        if not session or session.get('started'): return
+        if not await self._build_battle(session): return
         await interaction.message.edit(embed=self.battle_embed(session,"¡La pelea comienza! El más rápido empieza con 2 ⚡."),view=BattleView(self,key))
         session['battle_message_id']=interaction.message.id
 
@@ -2160,22 +2223,7 @@ class CardsCog(commands.Cog):
         """Como begin_battle pero edita el mensaje existente del canal en lugar de interaction.message."""
         session = self.battles.get(key)
         if not session or session.get('started'): return
-        players = {}
-        for user_id in session['users']:
-            row = await db.fetchrow("SELECT * FROM card_catalog WHERE slug=$1 AND active=TRUE", session['selected'].get(user_id))
-            if not row: return
-            stats = combat_stats(row); hp = max(1, stat_num(stats, 'HP', BATTLE_MAX_HP))
-            players[user_id] = {"id": user_id, "mention": f"<@{user_id}>", "card": row, "max_hp": hp, "hp": hp, "energy": 1, "defending": False, "states": {}, "last_breath_used": False}
-        speeds = {uid: stat_num(combat_stats(players[uid]['card']), 'Speed', 0) for uid in players}
-        turn = max(speeds, key=lambda uid: speeds[uid])
-        if speeds[session['users'][0]] != speeds[session['users'][1]]:
-            players[turn]['energy'] = 2
-        session.update({'started': True, 'players': players, 'turn': turn, 'turns': 0})
-        rows = [players[x]['card'] for x in session['users']]
-        session['db_id'] = await db.fetchval(
-            "INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-            session['guild_id'], session['channel_id'], *session['users'], rows[0]['slug'], rows[1]['slug']
-        )
+        if not await self._build_battle(session): return
         # Editar el mensaje original del canal (guardado en _rematch_message_id por end_battle)
         guild   = self.bot.get_guild(session['guild_id'])
         channel = guild.get_channel(session['channel_id']) if guild else None
@@ -2193,6 +2241,17 @@ class CardsCog(commands.Cog):
                 view=BattleView(self, key)
             )
             session['battle_message_id'] = msg.id
+
+    def _replace_fallen(self,session,user_id):
+        """Si la carta activa cayó, entra la siguiente viva del equipo. Devuelve (quedan_cartas, texto)."""
+        fallen=session['players'][user_id]
+        if fallen['hp']>0: return True,""
+        nxt=next((f for f in session['teams'][user_id] if f['hp']>0),None)
+        if nxt is None: return False,""
+        nxt['energy']=fallen['energy']  # la energía es del jugador, no de la carta
+        fallen['defending']=False
+        session['players'][user_id]=nxt
+        return True,f"\n💀 {fallen['card']['name']} cayó. ¡Entra {card_emoji(nxt['card'])} **{nxt['card']['name']}** de {nxt['mention']}!"
 
     def battle_embed(self,session,message):
         p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
@@ -2219,6 +2278,17 @@ class CardsCog(commands.Cog):
 
         if action=='defend':
             actor['defending']=True; actor['energy']=min(5,actor['energy']+1); message=f"{actor['mention']} levantó la defensa y recuperó 1 ⚡."
+        elif action.startswith('switch:'):
+            try: idx=int(action.split(':',1)[1])
+            except (ValueError, IndexError): idx=-1
+            team=session['teams'][session['turn']]
+            if not 0<=idx<len(team) or team[idx] is actor or team[idx]['hp']<=0:
+                return await interaction.followup.send("Esa carta no está disponible.",ephemeral=True)
+            new=team[idx]; new['energy']=actor['energy']; actor['defending']=False
+            session['players'][session['turn']]=new
+            message=f"🔄 {actor['mention']} cambió a {card_emoji(new['card'])} **{new['card']['name']}**."
+            await db.execute("INSERT INTO card_battle_logs (battle_id,turn_number,actor_id,action,damage,effect) VALUES ($1,$2,$3,$4,$5,$6)",session['db_id'],session['turns']+1,actor['id'],f"🔄 Cambio a {new['card']['name']}",0,'')
+            actor=new
         else:
             # ── Silencio: solo puede atacar o defender, no usar habilidades ─────
             if action.startswith('ability') and 'Silencio' in actor['states']:
@@ -2305,7 +2375,11 @@ class CardsCog(commands.Cog):
         if enemy['hp']<=0 and not enemy.get('last_breath_used') and random.randint(1,100)<=20:
             enemy['hp']=1; enemy['last_breath_used']=True
             message+=f"\n💫 **¡Último aliento!** {enemy['mention']} sobrevivió con 1 HP."
-        if enemy['hp']<=0: return await self.end_battle(interaction,key,actor['id'],message+f"\n💥 {enemy['mention']} quedó fuera de combate.")
+        if enemy['hp']<=0:
+            message+=f"\n💥 {enemy['card']['name']} de {enemy['mention']} quedó fuera de combate."
+            alive,txt=self._replace_fallen(session,enemy_id)
+            if not alive: return await self.end_battle(interaction,key,actor['id'],message+f"\n☠️ ¡Todo el equipo de {enemy['mention']} cayó!")
+            message+=txt; enemy=session['players'][enemy_id]
 
         # ── Efectos de estado al final del turno ───────────────────────────────
         state_msgs=[]
@@ -2325,8 +2399,16 @@ class CardsCog(commands.Cog):
                 player['hp']=1; player['last_breath_used']=True
                 state_msgs.append(f"💫 **¡Último aliento!** {player['mention']} sobrevivió con 1 HP.")
         if state_msgs: message+=f"\n{'  '.join(state_msgs)}"
-        if enemy['hp']<=0: return await self.end_battle(interaction,key,actor['id'],message+"\n☠️ Un estado terminó el combate.")
-        if actor['hp']<=0: return await self.end_battle(interaction,key,enemy_id,message+"\n☠️ Un estado terminó el combate.")
+        if enemy['hp']<=0:
+            message+=f"\n☠️ {enemy['card']['name']} cayó por un estado."
+            alive,txt=self._replace_fallen(session,enemy_id)
+            if not alive: return await self.end_battle(interaction,key,actor['id'],message+f"\n☠️ ¡Todo el equipo de {enemy['mention']} cayó!")
+            message+=txt
+        if actor['hp']<=0:
+            message+=f"\n☠️ {actor['card']['name']} cayó por un estado."
+            alive,txt=self._replace_fallen(session,actor['id'])
+            if not alive: return await self.end_battle(interaction,key,enemy_id,message+f"\n☠️ ¡Todo el equipo de {actor['mention']} cayó!")
+            message+=txt
         session['turn']=enemy_id
         await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2",session['turns'],session['db_id'])
         msg=await interaction.edit_original_response(embed=self.battle_embed(session,message),view=BattleView(self,key))
@@ -2336,7 +2418,7 @@ class CardsCog(commands.Cog):
         session=self.battles.get(key)
         if not session: return
         loser_id=next(x for x in session['users'] if x!=winner_id)
-        await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message}),session['db_id'])
+        await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message,'teams':{str(u):[f['card']['slug'] for f in t] for u,t in session.get('teams',{}).items()}}),session['db_id'])
         # ── Recompensa: 100 Abo Coins al ganador (constante global BATTLE_REWARD) ─
         await ensure_wallet(session['guild_id'],winner_id)
         await db.execute("UPDATE card_wallets SET coins=coins+$1,updated_at=NOW() WHERE guild_id=$2 AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
