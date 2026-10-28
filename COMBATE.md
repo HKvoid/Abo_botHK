@@ -22,8 +22,8 @@ Abo incluye una primera versión jugable de duelos PvP entre dos usuarios.
 - Los efectos de Quemadura y Veneno hacen 3 de daño al final del turno mientras duren.
 - La pelea y sus acciones quedan registradas en `card_battles` y `card_battle_logs`.
 
-Esta fase utiliza una carta activa por jugador. El equipo de tres cartas y el cambio de personaje pueden añadirse después sin cambiar el modelo base.
+Esta fase utiliza una carta activa por jugador. En el modo 3v3, cambiar de carta es gratuito: no consume el turno y permite actuar inmediatamente con la nueva carta.
 
 ## Modalidades de `/pelea`
 
-Al ejecutar `/pelea`, el comando incluye el parámetro **modalidad**, con las opciones **1v1** (una carta por jugador) y **3v3** (tres cartas distintas por equipo). Después, el rival acepta el desafío y cada jugador selecciona sus cartas. En 3v3, la carta con mayor velocidad sale primero; cuando una carta cae, entra automáticamente la siguiente, y el jugador puede cambiar manualmente a otra carta viva con **Cambiar**.
+Al ejecutar `/pelea`, el comando incluye el parámetro **modalidad**, con las opciones **1v1** (una carta por jugador) y **3v3** (tres cartas distintas por equipo). Después, el rival acepta el desafío y cada jugador selecciona sus cartas. En 3v3, la carta con mayor velocidad sale primero; cuando una carta cae, entra automáticamente la siguiente, y el jugador puede cambiar manualmente a otra carta viva con **Cambiar**, sin gastar el turno.
