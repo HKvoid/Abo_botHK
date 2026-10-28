@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS card_battles (
 );
 CREATE INDEX IF NOT EXISTS idx_card_battles_guild_created ON card_battles (guild_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_card_battles_users ON card_battles (guild_id, user_a, user_b, created_at DESC);
+ALTER TABLE card_battles ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '1v1';
 
 CREATE TABLE IF NOT EXISTS card_battle_logs (
     id BIGSERIAL PRIMARY KEY,
