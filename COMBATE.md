@@ -26,4 +26,4 @@ Esta fase utiliza una carta activa por jugador. El equipo de tres cartas y el ca
 
 ## Modalidades de `/pelea`
 
-Al ejecutar `/pelea @usuario`, quien inicia el desafío elige entre **1v1** (una carta por jugador) y **3v3** (tres cartas distintas por equipo). Después, el rival acepta el desafío y cada jugador selecciona sus cartas. En 3v3, la carta con mayor velocidad sale primero; cuando una carta cae, entra automáticamente la siguiente, y el jugador puede cambiar manualmente a otra carta viva con **Cambiar**.
+Al ejecutar `/pelea`, el comando incluye el parámetro **modalidad**, con las opciones **1v1** (una carta por jugador) y **3v3** (tres cartas distintas por equipo). Después, el rival acepta el desafío y cada jugador selecciona sus cartas. En 3v3, la carta con mayor velocidad sale primero; cuando una carta cae, entra automáticamente la siguiente, y el jugador puede cambiar manualmente a otra carta viva con **Cambiar**.
