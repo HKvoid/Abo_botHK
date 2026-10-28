@@ -666,30 +666,6 @@ class BattleChallengeView(discord.ui.View):
         await interaction.response.edit_message(embed=notice("Pelea cancelada","El desafío fue rechazado.",0xED4245),view=None); self.stop()
 
 
-class BattleModeView(discord.ui.View):
-    """Selector inicial de modalidad: combate individual o por equipos."""
-    def __init__(self,cog,guild_id,challenger,opponent):
-        super().__init__(timeout=60)
-        self.cog=cog; self.guild_id=guild_id; self.challenger=challenger; self.opponent=opponent
-
-    async def choose(self, interaction, mode):
-        if interaction.user.id != self.challenger:
-            return await interaction.response.send_message("Solo quien ejecutó `/pelea` puede elegir la modalidad.", ephemeral=True)
-        label = "1v1 · una carta" if mode == "1v1" else "3v3 · tres cartas por equipo"
-        await interaction.response.edit_message(
-            embed=notice("⚔️ Desafío de pelea", f"<@{self.challenger}> desafía a <@{self.opponent}> a un combate **{label}**.\n\nEl usuario desafiado debe aceptar para comenzar."),
-            view=BattleChallengeView(self.cog,self.guild_id,self.challenger,self.opponent,mode),
-        )
-        self.stop()
-
-    @discord.ui.button(label="1v1 · Una carta", emoji="🎴", style=discord.ButtonStyle.primary)
-    async def one_vs_one(self, interaction, button):
-        await self.choose(interaction, "1v1")
-
-    @discord.ui.button(label="3v3 · Tres cartas", emoji="⚔️", style=discord.ButtonStyle.success)
-    async def three_vs_three(self, interaction, button):
-        await self.choose(interaction, "3v3")
-
 BATTLE_TEAM_SIZE = 3
 
 class BattleChoice(discord.ui.Select):
@@ -2174,9 +2150,13 @@ class CardsCog(commands.Cog):
         await interaction.response.send_message(embed=notice("Ranking de coleccionistas 🏆", "\n".join(lines) or "Todavía no hay coleccionistas."))
 
 
-    @app_commands.command(name="pelea", description="Desafía a otro usuario y elige combate 1v1 o 3v3")
+    @app_commands.command(name="pelea", description="Desafía a otro usuario en combate 1v1 o 3v3")
     @app_commands.guild_only()
-    async def pelea(self, interaction: discord.Interaction, usuario: discord.Member):
+    @app_commands.choices(modalidad=[
+        app_commands.Choice(name="1v1 · Una carta", value="1v1"),
+        app_commands.Choice(name="3v3 · Tres cartas", value="3v3"),
+    ])
+    async def pelea(self, interaction: discord.Interaction, usuario: discord.Member, modalidad: str):
         if usuario.bot or usuario.id == interaction.user.id:
             return await interaction.response.send_message(embed=notice("Desafío inválido","Elige a otro usuario que no sea un bot.",0xED4245),ephemeral=True)
         active=await db.fetchrow("SELECT id FROM card_battles WHERE guild_id=$1 AND status='active' AND (user_a IN ($2,$3) OR user_b IN ($2,$3)) LIMIT 1",interaction.guild_id,interaction.user.id,usuario.id)
@@ -2187,9 +2167,14 @@ class CardsCog(commands.Cog):
                 await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",active['id'])
             else:
                 return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo. Usa `/cancelar_pelea` si está atascada.",0xED4245),ephemeral=True)
+        modalidad = modalidad if modalidad in {"1v1", "3v3"} else "1v1"
+        if modalidad == "1v1":
+            modo_texto = "**1v1 · Una carta**"
+        else:
+            modo_texto = "**3v3 · Tres cartas por equipo**"
         await interaction.response.send_message(
-            embed=notice("⚔️ Elige el tipo de combate", "Selecciona la modalidad para tu desafío: **1v1** usa una carta por jugador; **3v3** usa tres cartas por equipo."),
-            view=BattleModeView(self,interaction.guild_id,interaction.user.id,usuario.id),
+            embed=notice("⚔️ Desafío de pelea", f"{interaction.user.mention} desafió a {usuario.mention} en modalidad {modo_texto}.\n\nEl usuario desafiado debe aceptar para comenzar."),
+            view=BattleChallengeView(self, interaction.guild_id, interaction.user.id, usuario.id, modalidad),
         )
 
     @app_commands.command(name="cancelar_pelea", description="Cancela una pelea atascada de un usuario")
