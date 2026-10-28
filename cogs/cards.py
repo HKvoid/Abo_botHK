@@ -670,7 +670,12 @@ BATTLE_TEAM_SIZE = 3
 
 class BattleChoice(discord.ui.Select):
     def __init__(self,cog,key,user_id,rows,team_size):
-        options=[discord.SelectOption(label=str(row['name'])[:100],value=row['slug'],description=str(row['rarity'])) for row in rows[:25]]
+        options=[]
+        for row in rows[:25]:
+            quantity = int(row.get('owned_quantity') or 0)
+            label = f"{row['name']} · {row['rarity']}"[:100]
+            description = f"Tienes ×{quantity} · Seleccionable para este combate"[:100]
+            options.append(discord.SelectOption(label=label, value=row['slug'], description=description))
         size=min(team_size,len(options))
         label = "carta" if size == 1 else "cartas"
         super().__init__(placeholder=f"Elige {size} {label}...",min_values=size,max_values=size,options=options); self.cog=cog; self.key=key; self.user_id=user_id
@@ -852,7 +857,7 @@ class BattleView(discord.ui.View):
         actor=session['players'][session['turn']]
         bench=[(i,f) for i,f in enumerate(session['teams'][session['turn']]) if f is not actor and f['hp']>0]
         if not bench: return await interaction.response.send_message("No tienes más cartas disponibles para cambiar.",ephemeral=True)
-        await interaction.response.edit_message(embed=notice("🔄 Cambiar de carta","Elige qué carta entra al combate. Cambiar **consume tu turno**; la energía se conserva."),view=SwitchChoiceView(self.cog,self.key,interaction.user.id,bench,interaction.message))
+        await interaction.response.edit_message(embed=notice("🔄 Cambiar de carta","Elige qué carta entra al combate. Cambiar es **gratis** y no consume tu turno; la energía se conserva."),view=SwitchChoiceView(self.cog,self.key,interaction.user.id,bench,interaction.message))
     @discord.ui.button(label="Rendirse",emoji="🏳️",style=discord.ButtonStyle.danger)
     async def surrender(self,interaction,button): await self.act(interaction,"surrender")
 
@@ -1252,7 +1257,7 @@ class CardsCog(commands.Cog):
 
     # ── FUSIÓN ────────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="fusion", description="Fusiona 3 copias de una carta para obtener una de mayor rareza")
+    @app_commands.command(name="fusionar", description="Fusiona 3 copias de una carta para obtener una de mayor rareza")
     @app_commands.guild_only()
     @app_commands.describe(carta="Carta que quieres fusionar (necesitas ×3 copias)")
     async def fusion_cmd(self, interaction: discord.Interaction, carta: str):
@@ -1315,6 +1320,28 @@ class CardsCog(commands.Cog):
         )
         view = FusionConfirmView(gid, uid, row, result_row["slug"], result_row, copies, cost)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @fusion_cmd.autocomplete("carta")
+    async def fusion_carta_autocomplete(self, interaction: discord.Interaction, current: str):
+        query = f"%{(current or '').strip()}%"
+        rows = await db.fetch(
+            """SELECT c.slug,c.name,c.rarity,i.quantity
+               FROM card_catalog c JOIN card_inventory i ON i.card_slug=c.slug
+               WHERE c.active=TRUE AND i.guild_id=$1 AND i.user_id=$2 AND i.quantity>=3
+                 AND c.rarity IN ('Común','Rara','Épica')
+                 AND (c.name ILIKE $3 OR c.slug ILIKE $3)
+               ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name
+               LIMIT 25""",
+            interaction.guild_id, interaction.user.id, query, f"{(current or '').strip()}%",
+        )
+        fusion_costs = {"Común": 50, "Rara": 150, "Épica": 300}
+        return [
+            app_commands.Choice(
+                name=f"{row['name']} · {row['rarity']} · ×{row['quantity']} · cuesta {coins_text(fusion_costs[row['rarity']])}"[:100],
+                value=row['slug'],
+            )
+            for row in rows
+        ]
 
     # ── EVOLUCIÓN ─────────────────────────────────────────────────────────────
 
@@ -1396,6 +1423,33 @@ class CardsCog(commands.Cog):
         )
         view = EvolveConfirmView(gid, uid, row, evo, current_level, current_boost)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @evolucionar_cmd.autocomplete("carta")
+    async def evolucionar_carta_autocomplete(self, interaction: discord.Interaction, current: str):
+        query = f"%{(current or '').strip()}%"
+        rows = await db.fetch(
+            """SELECT c.slug,c.name,c.rarity,i.quantity,e.cost_copies,e.max_level,
+                      COALESCE(ie.evo_level,0)::int AS evo_level
+               FROM card_catalog c
+               JOIN card_inventory i ON i.card_slug=c.slug
+                    AND i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0
+               JOIN card_evolutions e ON e.base_slug=c.slug
+               LEFT JOIN card_inventory_evo ie ON ie.guild_id=$1 AND ie.user_id=$2 AND ie.card_slug=c.slug
+               WHERE c.active=TRUE
+                 AND COALESCE(ie.evo_level,0) < e.max_level
+                 AND i.quantity >= e.cost_copies
+                 AND (c.name ILIKE $3 OR c.slug ILIKE $3)
+               ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name
+               LIMIT 25""",
+            interaction.guild_id, interaction.user.id, query, f"{(current or '').strip()}%",
+        )
+        return [
+            app_commands.Choice(
+                name=f"{row['name']} · Nv. {row['evo_level']}/{row['max_level']} · ×{row['quantity']}"[:100],
+                value=row['slug'],
+            )
+            for row in rows
+        ]
 
     @app_commands.command(name="evolucion_configurar", description="Configura la evolución de una carta (admin)")
     @app_commands.guild_only()
@@ -2078,7 +2132,7 @@ class CardsCog(commands.Cog):
 
     @app_commands.command(name="mercado_publicar", description="Publica copias de una carta en el mercado")
     @app_commands.guild_only()
-    @app_commands.describe(carta="Carta a vender", cantidad="Copias", precio="Precio por copia")
+    @app_commands.describe(carta="Carta propia a vender", cantidad="Copias", precio="Precio por copia")
     async def mercado_publicar(self, interaction: discord.Interaction, carta: str, cantidad: int, precio: int):
         row = await card_row(carta)
         if not row or cantidad < 1 or precio < 1:
@@ -2092,51 +2146,32 @@ class CardsCog(commands.Cog):
                 await connection.execute("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5)", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
         await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una."), ephemeral=True)
 
+    @mercado_publicar.autocomplete("carta")
+    async def mercado_publicar_carta_autocomplete(self, interaction: discord.Interaction, current: str):
+        query = f"%{(current or '').strip()}%"
+        rows = await db.fetch(
+            """SELECT c.slug,c.name,c.rarity,i.quantity
+               FROM card_catalog c JOIN card_inventory i ON i.card_slug=c.slug
+               WHERE c.active=TRUE AND i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0
+                 AND (c.name ILIKE $3 OR c.slug ILIKE $3)
+               ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name
+               LIMIT 25""",
+            interaction.guild_id, interaction.user.id, query, f"{(current or '').strip()}%",
+        )
+        return [
+            app_commands.Choice(
+                name=f"{row['name']} · {row['rarity']} · ×{row['quantity']}"[:100],
+                value=row['slug'],
+            )
+            for row in rows
+        ]
+
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
     async def mercado(self, interaction: discord.Interaction):
         rows = await db.fetch("""SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50""", interaction.guild_id)
         await _market_seller_names(rows, interaction.guild)
         await interaction.response.send_message(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
-
-    @app_commands.command(name="mercado_cancelar", description="Retira una publicación propia y recupera las cartas")
-    @app_commands.guild_only()
-    async def mercado_cancelar(self, interaction: discord.Interaction, publicacion: int):
-        async with db._pool().acquire() as connection:
-            async with connection.transaction():
-                listing = await connection.fetchrow("SELECT * FROM card_market_listings WHERE id=$1 AND guild_id=$2 AND seller_id=$3 AND status='active' FOR UPDATE", publicacion, interaction.guild_id, interaction.user.id)
-                if not listing:
-                    return await interaction.response.send_message(embed=notice("Publicación no disponible", "Solo puedes retirar tus publicaciones activas.", 0xED4245), ephemeral=True)
-                await add_card(connection, interaction.guild_id, interaction.user.id, listing["card_slug"], listing["remaining"])
-                await connection.execute("UPDATE card_market_listings SET status='cancelled', remaining=0 WHERE id=$1", publicacion)
-                card = await connection.fetchrow("SELECT name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=$1", listing["card_slug"])
-        await interaction.response.send_message(embed=notice("Publicación retirada ↩️", f"Recuperaste **×{listing['remaining']} {card_emoji(card)} {card['name']}**."), ephemeral=True)
-
-    @app_commands.command(name="mercado_comprar", description="Compra una carta publicada en el mercado")
-    @app_commands.guild_only()
-    @app_commands.describe(publicacion="Publicación", cantidad="Cantidad a comprar")
-    async def mercado_comprar(self, interaction: discord.Interaction, publicacion: int, cantidad: int = 1):
-        if cantidad < 1:
-            return await interaction.response.send_message(embed=notice("Cantidad inválida", "La cantidad debe ser positiva.", 0xED4245), ephemeral=True)
-        async with db._pool().acquire() as connection:
-            async with connection.transaction():
-                listing = await connection.fetchrow("SELECT * FROM card_market_listings WHERE id=$1 AND guild_id=$2 AND status='active' FOR UPDATE", publicacion, interaction.guild_id)
-                if not listing or listing["remaining"] < cantidad:
-                    return await interaction.response.send_message(embed=notice("Publicación no disponible", "No existe o no quedan suficientes copias.", 0xED4245), ephemeral=True)
-                if listing["seller_id"] == interaction.user.id:
-                    return await interaction.response.send_message(embed=notice("Compra inválida", "No puedes comprarte tu propia publicación.", 0xED4245), ephemeral=True)
-                total = listing["price_each"] * cantidad
-                buyer = await connection.fetchrow("SELECT coins FROM card_wallets WHERE guild_id=$1 AND user_id=$2 FOR UPDATE", interaction.guild_id, interaction.user.id)
-                if not buyer or buyer["coins"] < total:
-                    return await interaction.response.send_message(embed=notice("Saldo insuficiente", f"Necesitas **{coins_text(total)} Abo Coins**.", 0xED4245), ephemeral=True)
-                await connection.execute("UPDATE card_wallets SET coins=coins-$1, updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", total, interaction.guild_id, interaction.user.id)
-                await connection.execute("INSERT INTO card_wallets (guild_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", interaction.guild_id, listing["seller_id"])
-                await connection.execute("UPDATE card_wallets SET coins=coins+$1, updated_at=NOW() WHERE guild_id=$2 AND user_id=$3", total, interaction.guild_id, listing["seller_id"])
-                await add_card(connection, interaction.guild_id, interaction.user.id, listing["card_slug"], cantidad)
-                remaining = listing["remaining"] - cantidad
-                await connection.execute("UPDATE card_market_listings SET remaining=$1,status=CASE WHEN $1=0 THEN 'sold' ELSE status END WHERE id=$2", remaining, publicacion)
-                card = await connection.fetchrow("SELECT name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=$1", listing["card_slug"])
-        await interaction.response.send_message(embed=notice("Compra completada 🛒", f"Compraste **×{cantidad} {card_emoji(card)} {card['name']}** por **{coins_text(total)} Abo Coins**."), ephemeral=True)
 
     @app_commands.command(name="ranking_cartas", description="Ranking de coleccionistas por valor de cartas")
     @app_commands.guild_only()
@@ -2194,7 +2229,7 @@ class CardsCog(commands.Cog):
         team_size = 1 if mode == "1v1" else BATTLE_TEAM_SIZE
         choices=[]
         for user_id in (user_a,user_b):
-            rows=await db.fetch("SELECT c.* FROM card_catalog c JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE c.active=TRUE AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25",guild_id,user_id)
+            rows=await db.fetch("SELECT c.*, i.quantity AS owned_quantity FROM card_catalog c JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE c.active=TRUE AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25",guild_id,user_id)
             if not rows:
                 return await interaction.edit_original_response(embed=notice("No hay personajes disponibles",f"<@{user_id}> necesita una carta en su colección.",0xED4245),view=None)
             if mode == "3v3" and len(rows) < BATTLE_TEAM_SIZE:
@@ -2316,9 +2351,13 @@ class CardsCog(commands.Cog):
                 return await interaction.followup.send("Esa carta no está disponible.",ephemeral=True)
             new=team[idx]; new['energy']=actor['energy']; actor['defending']=False
             session['players'][session['turn']]=new
-            message=f"🔄 {actor['mention']} cambió a {card_emoji(new['card'])} **{new['card']['name']}**."
-            await db.execute("INSERT INTO card_battle_logs (battle_id,turn_number,actor_id,action,damage,effect) VALUES ($1,$2,$3,$4,$5,$6)",session['db_id'],session['turns']+1,actor['id'],f"🔄 Cambio a {new['card']['name']}",0,'')
-            actor=new
+            message=f"🔄 {actor['mention']} cambió a {card_emoji(new['card'])} **{new['card']['name']}**. ✅ Cambio gratuito: sigues jugando tú."
+            await db.execute("INSERT INTO card_battle_logs (battle_id,turn_number,actor_id,action,damage,effect) VALUES ($1,$2,$3,$4,$5,$6)",session['db_id'],session['turns']+1,actor['id'],f"🔄 Cambio gratuito a {new['card']['name']}",0,'')
+            # Cambiar de carta no consume el turno: no se procesan estados, no
+            # aumenta el contador y el mismo jugador puede actuar con la nueva carta.
+            msg=await interaction.edit_original_response(embed=self.battle_embed(session,message),view=BattleView(self,key))
+            session['battle_message_id']=msg.id
+            return
         else:
             # ── Silencio: solo puede atacar o defender, no usar habilidades ─────
             if action.startswith('ability') and 'Silencio' in actor['states']:
