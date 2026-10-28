@@ -652,24 +652,52 @@ def battle_line(player):
     return line
 
 class BattleChallengeView(discord.ui.View):
-    def __init__(self,cog,guild_id,challenger,opponent):
-        super().__init__(timeout=60); self.cog=cog; self.guild_id=guild_id; self.challenger=challenger; self.opponent=opponent
+    def __init__(self,cog,guild_id,challenger,opponent,mode="1v1"):
+        super().__init__(timeout=60); self.cog=cog; self.guild_id=guild_id; self.challenger=challenger; self.opponent=opponent; self.mode=mode
     @discord.ui.button(label="Aceptar pelea",emoji="⚔️",style=discord.ButtonStyle.success)
     async def accept(self,interaction,button):
         if interaction.user.id!=self.opponent: return await interaction.response.send_message("Solo el usuario desafiado puede aceptar.",ephemeral=True)
-        await interaction.response.defer(); await self.cog.prepare_battle(interaction,self.guild_id,self.challenger,self.opponent); self.stop()
+        await interaction.response.defer()
+        await self.cog.prepare_battle(interaction,self.guild_id,self.challenger,self.opponent,self.mode)
+        self.stop()
     @discord.ui.button(label="Rechazar",emoji="✖️",style=discord.ButtonStyle.danger)
     async def reject(self,interaction,button):
         if interaction.user.id!=self.opponent: return await interaction.response.send_message("Solo el usuario desafiado puede rechazar.",ephemeral=True)
         await interaction.response.edit_message(embed=notice("Pelea cancelada","El desafío fue rechazado.",0xED4245),view=None); self.stop()
 
+
+class BattleModeView(discord.ui.View):
+    """Selector inicial de modalidad: combate individual o por equipos."""
+    def __init__(self,cog,guild_id,challenger,opponent):
+        super().__init__(timeout=60)
+        self.cog=cog; self.guild_id=guild_id; self.challenger=challenger; self.opponent=opponent
+
+    async def choose(self, interaction, mode):
+        if interaction.user.id != self.challenger:
+            return await interaction.response.send_message("Solo quien ejecutó `/pelea` puede elegir la modalidad.", ephemeral=True)
+        label = "1v1 · una carta" if mode == "1v1" else "3v3 · tres cartas por equipo"
+        await interaction.response.edit_message(
+            embed=notice("⚔️ Desafío de pelea", f"<@{self.challenger}> desafía a <@{self.opponent}> a un combate **{label}**.\n\nEl usuario desafiado debe aceptar para comenzar."),
+            view=BattleChallengeView(self.cog,self.guild_id,self.challenger,self.opponent,mode),
+        )
+        self.stop()
+
+    @discord.ui.button(label="1v1 · Una carta", emoji="🎴", style=discord.ButtonStyle.primary)
+    async def one_vs_one(self, interaction, button):
+        await self.choose(interaction, "1v1")
+
+    @discord.ui.button(label="3v3 · Tres cartas", emoji="⚔️", style=discord.ButtonStyle.success)
+    async def three_vs_three(self, interaction, button):
+        await self.choose(interaction, "3v3")
+
 BATTLE_TEAM_SIZE = 3
 
 class BattleChoice(discord.ui.Select):
-    def __init__(self,cog,key,user_id,rows):
+    def __init__(self,cog,key,user_id,rows,team_size):
         options=[discord.SelectOption(label=str(row['name'])[:100],value=row['slug'],description=str(row['rarity'])) for row in rows[:25]]
-        size=min(BATTLE_TEAM_SIZE,len(options))
-        super().__init__(placeholder=f"Elige tu equipo ({size} carta{'s' if size!=1 else ''})...",min_values=size,max_values=size,options=options); self.cog=cog; self.key=key; self.user_id=user_id
+        size=min(team_size,len(options))
+        label = "carta" if size == 1 else "cartas"
+        super().__init__(placeholder=f"Elige {size} {label}...",min_values=size,max_values=size,options=options); self.cog=cog; self.key=key; self.user_id=user_id
     async def callback(self,interaction):
         if interaction.user.id!=self.user_id: return await interaction.response.send_message("Este selector no es para ti.",ephemeral=True)
         session=self.cog.battles.get(self.key)
@@ -684,7 +712,7 @@ class BattleChoice(discord.ui.Select):
 class BattleSetupView(discord.ui.View):
     def __init__(self,cog,key,choices):
         super().__init__(timeout=120)
-        for user_id,rows in choices: self.add_item(BattleChoice(cog,key,user_id,rows))
+        for user_id,rows,team_size in choices: self.add_item(BattleChoice(cog,key,user_id,rows,team_size))
 
 class AbilityChoice(discord.ui.Select):
     def __init__(self, cog, key, user_id, stats):
@@ -757,6 +785,7 @@ class RematchView(discord.ui.View):
         self.cards_used  = {uid: [f['card']['slug'] for f in finished_session['teams'][uid]]
                             for uid in finished_session['users']}
         self.users       = finished_session['users']
+        self.mode        = finished_session.get('mode', '1v1')
         self.accepted    = set()
         self._message_id: int | None = None  # se rellena al enviar el embed final
 
@@ -780,6 +809,7 @@ class RematchView(discord.ui.View):
             'channel_id': self.channel_id,
             'users':      self.users,
             'selected':   dict(self.cards_used),
+            'mode':       getattr(self, 'mode', '1v1'),
             'started':    False,
             '_rematch_message_id': self._message_id,  # usado por begin_battle
         }
@@ -808,7 +838,7 @@ class BattleView(discord.ui.View):
             msg_id=session.get('battle_message_id')
             if channel and msg_id:
                 p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
-                embed=notice("⚔️ Pelea carta contra carta",
+                embed=notice("⚔️ Pelea " + ("3v3 · equipos de cartas" if session.get('mode') == '3v3' else "1v1 · carta contra carta"),
                     f"⏰ Pelea anulada por inactividad.\n{turn_mention} no actuó a tiempo.\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",
                     0x95A5A6)
                 embed.add_field(name="Resultado",value="Anulada · Sin ganador",inline=False)
@@ -2144,7 +2174,7 @@ class CardsCog(commands.Cog):
         await interaction.response.send_message(embed=notice("Ranking de coleccionistas 🏆", "\n".join(lines) or "Todavía no hay coleccionistas."))
 
 
-    @app_commands.command(name="pelea", description="Desafía a otro usuario a una pelea carta contra carta")
+    @app_commands.command(name="pelea", description="Desafía a otro usuario y elige combate 1v1 o 3v3")
     @app_commands.guild_only()
     async def pelea(self, interaction: discord.Interaction, usuario: discord.Member):
         if usuario.bot or usuario.id == interaction.user.id:
@@ -2157,7 +2187,10 @@ class CardsCog(commands.Cog):
                 await db.execute("UPDATE card_battles SET status='cancelled',completed_at=NOW() WHERE id=$1",active['id'])
             else:
                 return await interaction.response.send_message(embed=notice("Ya hay una pelea activa","Uno de los usuarios ya está combatiendo. Usa `/cancelar_pelea` si está atascada.",0xED4245),ephemeral=True)
-        await interaction.response.send_message(embed=notice("⚔️ Desafío de pelea",f"{interaction.user.mention} desafió a {usuario.mention}.\n\nAcepten para elegir un equipo de hasta 3 cartas de su colección. Cuando una carta cae, entra la siguiente; también pueden usar 🔄 Cambiar."),view=BattleChallengeView(self,interaction.guild_id,interaction.user.id,usuario.id))
+        await interaction.response.send_message(
+            embed=notice("⚔️ Elige el tipo de combate", "Selecciona la modalidad para tu desafío: **1v1** usa una carta por jugador; **3v3** usa tres cartas por equipo."),
+            view=BattleModeView(self,interaction.guild_id,interaction.user.id,usuario.id),
+        )
 
     @app_commands.command(name="cancelar_pelea", description="Cancela una pelea atascada de un usuario")
     @app_commands.guild_only()
@@ -2172,15 +2205,23 @@ class CardsCog(commands.Cog):
         for k in dead: self.battles.pop(k,None)
         await interaction.response.send_message(embed=notice("Pelea cancelada 🏳️",f"La pelea activa de {usuario.mention} fue cancelada. Ambos jugadores pueden volver a pelear."),ephemeral=True)
 
-    async def prepare_battle(self,interaction,guild_id,user_a,user_b):
+    async def prepare_battle(self,interaction,guild_id,user_a,user_b,mode="1v1"):
+        team_size = 1 if mode == "1v1" else BATTLE_TEAM_SIZE
         choices=[]
         for user_id in (user_a,user_b):
             rows=await db.fetch("SELECT c.* FROM card_catalog c JOIN card_inventory i ON i.card_slug=c.slug AND i.guild_id=$1 AND i.user_id=$2 WHERE c.active=TRUE AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25",guild_id,user_id)
-            if not rows: return await interaction.edit_original_response(embed=notice("No hay personajes disponibles",f"<@{user_id}> necesita una carta en su colección.",0xED4245),view=None)
-            choices.append((user_id,rows))
+            if not rows:
+                return await interaction.edit_original_response(embed=notice("No hay personajes disponibles",f"<@{user_id}> necesita una carta en su colección.",0xED4245),view=None)
+            if mode == "3v3" and len(rows) < BATTLE_TEAM_SIZE:
+                return await interaction.edit_original_response(embed=notice("No se puede iniciar 3v3",f"<@{user_id}> necesita al menos **3 cartas distintas** en su colección para este modo.",0xED4245),view=None)
+            choices.append((user_id,rows,team_size))
         key=f"{guild_id}:{user_a}:{user_b}:{interaction.id}"
-        self.battles[key]={"guild_id":guild_id,"channel_id":interaction.channel_id,"users":(user_a,user_b),"selected":{}}
-        await interaction.edit_original_response(embed=notice("⚔️ Elige tu equipo",f"<@{user_a}> y <@{user_b}> deben escoger **3 cartas** (o todas las que tengan si son menos). Sale primero la carta más rápida de tu equipo."),view=BattleSetupView(self,key,choices))
+        self.battles[key]={"guild_id":guild_id,"channel_id":interaction.channel_id,"users":(user_a,user_b),"selected":{},"mode":mode}
+        if mode == "3v3":
+            title, text = "⚔️ Elige tu equipo 3v3", f"<@{user_a}> y <@{user_b}> deben escoger **3 cartas distintas**. La más rápida sale primero y las demás entran cuando una carta cae."
+        else:
+            title, text = "⚔️ Elige tu carta 1v1", f"<@{user_a}> y <@{user_b}> deben escoger una carta."
+        await interaction.edit_original_response(embed=notice(title,text),view=BattleSetupView(self,key,choices))
 
     async def _build_battle(self,session):
         """Crea los equipos, la carta activa de cada jugador, el turno inicial y el registro en la DB."""
@@ -2188,6 +2229,9 @@ class CardsCog(commands.Cog):
         for user_id in session['users']:
             slugs=session['selected'].get(user_id) or []
             if isinstance(slugs,str): slugs=[slugs]
+            expected = 1 if session.get('mode', '1v1') == '1v1' else BATTLE_TEAM_SIZE
+            if len(slugs) != expected:
+                return False
             rows=await db.fetch("SELECT * FROM card_catalog WHERE slug=ANY($1::text[]) AND active=TRUE",list(slugs))
             by_slug={r['slug']:r for r in rows}
             team=[]
@@ -2209,7 +2253,7 @@ class CardsCog(commands.Cog):
             players[turn]['energy']=2
         session.update({'started':True,'teams':teams,'players':players,'turn':turn,'turns':0})
         leads=[players[x]['card'] for x in session['users']]
-        session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],leads[0]['slug'],leads[1]['slug'])
+        session['db_id']=await db.fetchval("INSERT INTO card_battles (guild_id,channel_id,user_a,user_b,card_a,card_b,mode) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",session['guild_id'],session['channel_id'],*session['users'],leads[0]['slug'],leads[1]['slug'],session.get('mode','1v1'))
         return True
 
     async def begin_battle(self,interaction,key):
@@ -2255,7 +2299,8 @@ class CardsCog(commands.Cog):
 
     def battle_embed(self,session,message):
         p1=session['players'][session['users'][0]]; p2=session['players'][session['users'][1]]
-        embed=notice("⚔️ Pelea carta contra carta",f"{message}\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",0xE67E22)
+        title = "⚔️ Pelea 3v3 · equipos de cartas" if session.get('mode') == '3v3' else "⚔️ Pelea 1v1 · carta contra carta"
+        embed=notice(title,f"{message}\n\n{battle_line(p1)}\n\n**VS**\n\n{battle_line(p2)}",0xE67E22)
         embed.add_field(name="Turno",value=f"{session['turns']+1} · juega <@{session['turn']}>",inline=False)
         return embed
 
