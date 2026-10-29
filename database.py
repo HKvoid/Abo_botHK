@@ -316,6 +316,72 @@ CREATE TABLE IF NOT EXISTS card_inventory_evo (
     stat_boost_pct INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id, card_slug)
 );
+
+-- Progreso global por usuario: no contiene guild_id a propósito.
+CREATE TABLE IF NOT EXISTS card_wallets_global (
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    user_id BIGINT PRIMARY KEY,
+    coins BIGINT NOT NULL DEFAULT 500 CHECK (coins >= 0),
+    daily_claimed_at TIMESTAMPTZ,
+    daily_streak INTEGER NOT NULL DEFAULT 0,
+    xp BIGINT NOT NULL DEFAULT 0,
+    level INTEGER NOT NULL DEFAULT 1,
+    pity_rare INTEGER NOT NULL DEFAULT 0,
+    pity_epic INTEGER NOT NULL DEFAULT 0,
+    packs_opened INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS card_inventory_global (
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL,
+    card_slug TEXT NOT NULL REFERENCES card_catalog(slug),
+    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    first_obtained_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (user_id, card_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_card_inventory_global_user
+    ON card_inventory_global (user_id, quantity DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_card_inventory_global_legacy
+    ON card_inventory_global (guild_id, user_id, card_slug);
+
+CREATE TABLE IF NOT EXISTS card_inventory_evo_global (
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL,
+    card_slug TEXT NOT NULL REFERENCES card_catalog(slug),
+    evo_level INTEGER NOT NULL DEFAULT 0,
+    stat_boost_pct INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, card_slug)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_card_inventory_evo_global_legacy
+    ON card_inventory_evo_global (guild_id, user_id, card_slug);
+
+CREATE TABLE IF NOT EXISTS card_set_claims_global (
+    guild_id BIGINT NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL,
+    set_slug TEXT NOT NULL,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, set_slug)
+);
+
+-- La columna legacy se conserva solo para que helpers antiguos puedan seguir
+-- recibiendo guild_id; el trigger la normaliza y nunca participa en la identidad.
+CREATE OR REPLACE FUNCTION normalize_card_global_guild() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN NEW.guild_id := 0; RETURN NEW; END $$;
+DROP TRIGGER IF EXISTS card_wallets_global_guild ON card_wallets_global;
+CREATE TRIGGER card_wallets_global_guild BEFORE INSERT OR UPDATE ON card_wallets_global
+FOR EACH ROW EXECUTE FUNCTION normalize_card_global_guild();
+DROP TRIGGER IF EXISTS card_inventory_global_guild ON card_inventory_global;
+CREATE TRIGGER card_inventory_global_guild BEFORE INSERT OR UPDATE ON card_inventory_global
+FOR EACH ROW EXECUTE FUNCTION normalize_card_global_guild();
+DROP TRIGGER IF EXISTS card_inventory_evo_global_guild ON card_inventory_evo_global;
+CREATE TRIGGER card_inventory_evo_global_guild BEFORE INSERT OR UPDATE ON card_inventory_evo_global
+FOR EACH ROW EXECUTE FUNCTION normalize_card_global_guild();
+DROP TRIGGER IF EXISTS card_set_claims_global_guild ON card_set_claims_global;
+CREATE TRIGGER card_set_claims_global_guild BEFORE INSERT OR UPDATE ON card_set_claims_global
+FOR EACH ROW EXECUTE FUNCTION normalize_card_global_guild();
 """
 
 
@@ -353,7 +419,54 @@ class Database:
         )
         async with self.pool.acquire() as connection:
             await connection.execute(_SCHEMA)
+        await self.migrate_card_progress_global()
         await self.migrate_sqlite_if_present()
+
+    async def migrate_card_progress_global(self) -> None:
+        """Consolida una vez el progreso histórico de todos los servidores por usuario.
+
+        La migración no modifica ni elimina las tablas antiguas. Los valores aditivos se
+        suman; nivel/evolución/favorita se combinan conservadoramente; los claims son
+        distintos. El advisory lock evita carreras entre arranques concurrentes.
+        """
+        marker = "card_progress_global_v1"
+        async with self._pool().acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", marker)
+                if await connection.fetchval("SELECT 1 FROM schema_migrations WHERE migration_key=$1", marker):
+                    return
+                await connection.execute("""
+                    INSERT INTO card_wallets_global
+                        (user_id, coins, daily_claimed_at, daily_streak, xp, level,
+                         pity_rare, pity_epic, packs_opened, created_at, updated_at)
+                    SELECT user_id, SUM(coins), MAX(daily_claimed_at), MAX(daily_streak),
+                           SUM(xp), MAX(level), MAX(pity_rare), MAX(pity_epic),
+                           SUM(packs_opened), MIN(created_at), MAX(updated_at)
+                    FROM card_wallets GROUP BY user_id
+                    ON CONFLICT (user_id) DO NOTHING
+                """)
+                await connection.execute("""
+                    INSERT INTO card_inventory_global
+                        (user_id, card_slug, quantity, first_obtained_at, is_favorite)
+                    SELECT user_id, card_slug, SUM(quantity), MIN(first_obtained_at), BOOL_OR(is_favorite)
+                    FROM card_inventory GROUP BY user_id, card_slug
+                    ON CONFLICT (user_id, card_slug) DO NOTHING
+                """)
+                await connection.execute("""
+                    INSERT INTO card_inventory_evo_global (user_id, card_slug, evo_level, stat_boost_pct)
+                    SELECT user_id, card_slug, MAX(evo_level), MAX(stat_boost_pct)
+                    FROM card_inventory_evo GROUP BY user_id, card_slug
+                    ON CONFLICT (user_id, card_slug) DO NOTHING
+                """)
+                await connection.execute("""
+                    INSERT INTO card_set_claims_global (user_id, set_slug, claimed_at)
+                    SELECT user_id, set_slug, MIN(claimed_at)
+                    FROM card_set_claims GROUP BY user_id, set_slug
+                    ON CONFLICT (user_id, set_slug) DO NOTHING
+                """)
+                await connection.execute(
+                    "INSERT INTO schema_migrations (migration_key) VALUES ($1) ON CONFLICT DO NOTHING", marker
+                )
 
     async def close(self) -> None:
         if self.pool is not None:

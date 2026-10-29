@@ -27,3 +27,9 @@ Esta fase utiliza una carta activa por jugador. En el modo 3v3, cambiar de carta
 ## Modalidades de `/pelea`
 
 Al ejecutar `/pelea`, el comando incluye el parámetro **modalidad**, con las opciones **1v1** (una carta por jugador) y **3v3** (tres cartas distintas por equipo). Después, el rival acepta el desafío y cada jugador selecciona sus cartas. En 3v3, la carta con mayor velocidad sale primero; cuando una carta cae, entra automáticamente la siguiente, y el jugador puede cambiar manualmente a otra carta viva con **Cambiar**, sin gastar el turno.
+
+## Inactividad
+
+- La invitación, la selección inicial y la pelea activa expiran tras **6 minutos sin actividad**.
+- En una pelea activa, el contador se reinicia únicamente cuando se registra una acción; no existe un límite general de duración de la pelea.
+- La regla es igual para 1v1 y 3v3. Los menús auxiliares de habilidad o cambio no cancelan la pelea por sí mismos; solo vuelven al panel de acciones.

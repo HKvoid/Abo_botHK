@@ -25,6 +25,20 @@ if not TOKEN or not GROQ_API_KEY:
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
+def has_guild_permission(permission: str):
+    """Protege un comando con un permiso nativo de Discord, no con roles."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.id == TU_ID:
+            return True
+        guild = interaction.guild
+        if not guild or not isinstance(interaction.user, discord.Member):
+            return False
+        if interaction.user.id == guild.owner_id:
+            return True
+        return bool(getattr(interaction.user.guild_permissions, permission, False))
+    return app_commands.check(predicate)
+
+
 def is_staff():
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.id == TU_ID:
