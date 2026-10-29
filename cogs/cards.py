@@ -1200,6 +1200,41 @@ class CardsCog(commands.Cog):
                 "last_activity_at": time.monotonic(),
             }
 
+    @app_commands.command(name="cguia", description="Guía breve de comandos de Abo Cards (! y /)")
+    @app_commands.guild_only()
+    async def cguia(self, interaction: discord.Interaction):
+        nl = chr(10)
+        embed = discord.Embed(
+            title="Guía de Abo Cards 🎴",
+            description="Consulta rápida de los comandos de cartas con prefijo `!` y slash `/`.",
+            color=0x5865F2,
+        )
+        embed.add_field(name="Colección", value=nl.join([
+            "`/sobre` · `!sobre` — Abre un sobre.",
+            "`/coleccion` · `!coleccion` — Consulta tu colección.",
+            "`/carta <nombre>` · `!carta <nombre>` — Detalles de una carta.",
+            "`/sets` · `!sets` — Lista los sets.",
+            "`/set <nombre>` · `!set <nombre>` — Progreso de un set.",
+            "`/perfil [usuario]` · `!perfil [@usuario]` — Perfil de cartas.",
+        ]), inline=False)
+        embed.add_field(name="Economía y mejoras", value=nl.join([
+            "`/diario_cartas` · `!diario` — Recompensa diaria.",
+            "`/saldo_cartas` · `!saldo` — Consulta tus Abo Coins.",
+            "`/fusionar <carta>` — Fusiona copias.",
+            "`/evolucionar <carta>` — Evoluciona una carta.",
+            "`/favorita <carta>` — Marca una favorita.",
+            "`/mercado` · `!mercado` — Abre el mercado.",
+            "`/mercado_publicar <carta> <cantidad> <precio>` — Publica cartas.",
+        ]), inline=False)
+        embed.add_field(name="Interacción", value=nl.join([
+            "`/comparar usuario` · `!comparar @usuario` — Compara colecciones.",
+            "`/tradeo usuario` · `!tradeo @usuario` — Inicia un intercambio.",
+            "`/pelea usuario modalidad` — Desafía en 1v1 o 3v3.",
+            "`/ranking_cartas` · `!ranking` — Ranking del servidor.",
+        ]), inline=False)
+        embed.set_footer(text="Abo Cards · Usa /help para el resto de funciones del bot")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="diario_cartas", description="Reclama tus Abo Coins diarios para comprar sobres")
     @app_commands.guild_only()
     async def diario_cartas(self, interaction: discord.Interaction):
@@ -1826,14 +1861,37 @@ class CardsCog(commands.Cog):
             "saldo": "saldo_cartas", "diario": "diario_cartas", "cards": "coleccion",
             "collection": "coleccion", "card": "carta", "pack": "sobre",
             "market": "mercado", "ranking": "ranking_cartas", "colecciones": "sets", "profile": "perfil",
-            "favorita": "favorita", "tienda": "tienda",
+            "favorita": "favorita", "tienda": "tienda", "ayudacartas": "cguia",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "ayudacartas", "comparar", "favorita", "tienda"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cguia", "comparar", "favorita", "tienda"}
         if command not in quick:
             return False
-        if command == "ayudacartas":
-            await message.channel.send(embed=notice("Comandos rápidos de Abo Cards 🎴", "`!sobre` · `!coleccion` · `!carta <nombre>` · `!saldo` · `!diario` · `!mercado` · `!ranking` · `!tradeo @usuario` · `!comparar @usuario`\n\nPara fusionar, evolucionar o publicar en el mercado usa los comandos `/fusionar`, `/evolucionar` y `/mercado_*`."))
+        if command == "cguia":
+            nl = "\n"
+            embed = notice("Guía de Abo Cards 🎴", "Consulta rápida de comandos con `!` y `/`.")
+            embed.add_field(name="Colección", value=nl.join([
+                "`/sobre` · `!sobre` — Abre un sobre.",
+                "`/coleccion` · `!coleccion` — Consulta tu colección.",
+                "`/carta <nombre>` · `!carta <nombre>` — Detalles.",
+                "`/sets` · `!sets` — Lista los sets.",
+                "`/set <nombre>` · `!set <nombre>` — Progreso de un set.",
+                "`/perfil [usuario]` · `!perfil [@usuario]` — Perfil.",
+            ]), inline=False)
+            embed.add_field(name="Economía", value=nl.join([
+                "`/diario_cartas` · `!diario` — Recompensa diaria.",
+                "`/saldo_cartas` · `!saldo` — Abo Coins.",
+                "`/fusionar`, `/evolucionar`, `/favorita` — Mejoras.",
+                "`/mercado` · `!mercado` — Mercado.",
+                "`/mercado_publicar` — Publicar cartas.",
+            ]), inline=False)
+            embed.add_field(name="Interacción", value=nl.join([
+                "`/comparar usuario` · `!comparar @usuario` — Comparar.",
+                "`/tradeo usuario` · `!tradeo @usuario` — Intercambiar.",
+                "`/pelea usuario modalidad` — Pelea 1v1 o 3v3.",
+                "`/ranking_cartas` · `!ranking` — Ranking del servidor.",
+            ]), inline=False)
+            await message.channel.send(embed=embed)
             return True
         if command == "comparar":
             target = message.mentions[0] if message.mentions else None

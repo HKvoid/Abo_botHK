@@ -55,10 +55,7 @@ class HelpCog(commands.Cog):
     async def help(self, interaction: discord.Interaction):
         is_staff = interaction.user.id == TU_ID or any(r.name in ROLES_COMANDOS for r in interaction.user.roles)
         category_pages = [
-            ("Inicio", "🤖 **IA**\nMenciona a Abo en un mensaje para hablar con él.\n\n🎨 **Colores**\n`/color` — Abre el menú de colores.\n\n🎫 **Soporte**\nUsa el panel de tickets para abrir una conversación privada con el staff."),
-            ("Abo Cards · Colección", "🎴 `/sobre` — Compra un sobre de 3 cartas.\n📚 `/coleccion [usuario] [filtro]` — Consulta un álbum paginado.\n🔎 `/carta carta` — Detalles, imagen y estadísticas.\n🗂️ `/sets` — Lista los sets disponibles.\n🗂️ `/set set` — Muestra el progreso de un set.\n👤 `/perfil [usuario]` — Perfil, XP, saldo y colección.\n🏆 `/ranking_cartas` — Ranking por valor de colección."),
-            ("Abo Cards · Economía", "💰 `/diario_cartas` — Reclama tu recompensa diaria.\n💳 `/saldo_cartas` — Consulta tus Abo Coins.\n✨ `/fusionar carta` — Fusiona copias para subir de rareza.\n🌟 `/evolucionar carta` — Mejora los stats de una carta.\n⭐ `/favorita carta` — Marca una carta propia como favorita.\n🏪 `/mercado` — Abre el mercado y compra con botones.\n📤 `/mercado_publicar` — Publica copias propias en el mercado."),
-            ("Tradeos y combates", "🤝 `/tradeo usuario` — Abre un intercambio con selector de cartas, cantidades y confirmaciones.\n⚔️ `/pelea usuario modalidad` — Desafía en `1v1` o `3v3`.\n\nDurante el tradeo puedes usar los botones o el formato de texto como respaldo. En la pelea, cada jugador selecciona sus cartas después de aceptar."),
+            ("Inicio", "🤖 **IA**\nMenciona a Abo en un mensaje para hablar con él.\n\n🎨 **Colores**\n`/color` — Abre el menú de colores.\n\n🎫 **Soporte**\nUsa el panel de tickets para abrir una conversación privada con el staff.\n\n🎴 **Abo Cards**\n`/cguia` — Guía breve de todos los comandos de cartas con prefijo `!` y slash `/`."),
         ]
         if is_staff:
             category_pages.extend([
