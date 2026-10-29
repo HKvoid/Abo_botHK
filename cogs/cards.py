@@ -298,22 +298,23 @@ def card_emoji(row) -> str:
 
 
 async def collection_rows(guild_id: int, user_id: int, filter_name: str = ""):
+    """Obtiene la colección global del usuario; guild_id se conserva por compatibilidad."""
     filter_name = (filter_name or "").strip().lower()
-    if filter_name in {"faltantes", "faltantes"}:
+    if filter_name in {"faltantes", "faltante"}:
         return await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,0::int AS quantity,c.base_value
             FROM card_catalog c WHERE c.active=TRUE AND NOT EXISTS
-            (SELECT 1 FROM card_inventory_global i WHERE ($1 IS NOT NULL) AND i.user_id=$2 AND i.card_slug=c.slug AND i.quantity>0)
-            ORDER BY c.rarity DESC,c.name""", guild_id, user_id)
+            (SELECT 1 FROM card_inventory_global i WHERE i.user_id=$1 AND i.card_slug=c.slug AND i.quantity>0)
+            ORDER BY c.rarity DESC,c.name""", user_id)
     extra = ""
-    args = [guild_id, user_id]
+    args = [user_id]
     if filter_name in {"comun", "común", "rara", "epica", "épica", "legendaria"}:
-        extra = " AND c.rarity=$3"
+        extra = " AND c.rarity=$2"
         args.append({"comun":"Común","común":"Común","rara":"Rara","epica":"Épica","épica":"Épica","legendaria":"Legendaria"}[filter_name])
     elif filter_name in {"repetidas", "repetida"}:
         extra = " AND i.quantity>1"
     return await db.fetch(f"""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,i.quantity,c.base_value
         FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug
-        WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0{extra}
+        WHERE i.user_id=$1 AND i.quantity>0{extra}
         ORDER BY c.rarity DESC,c.name""", *args)
 
 
@@ -373,12 +374,12 @@ async def purchase_listing(guild_id: int, user_id: int, listing_id: int, quantit
             if listing["seller_id"] == user_id:
                 return None, "No puedes comprarte tu propia publicación."
             total = listing["price_each"] * quantity
-            buyer = await connection.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE", guild_id, user_id)
+            buyer = await connection.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE", guild_id, user_id)
             if not buyer or buyer["coins"] < total:
                 return None, f"Necesitas **{coins_text(total)} Abo Coins**."
-            await connection.execute("UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3", total, guild_id, user_id)
+            await connection.execute("UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3", total, guild_id, user_id)
             await connection.execute("INSERT INTO card_wallets_global (guild_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", guild_id, listing["seller_id"])
-            await connection.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3", total, guild_id, listing["seller_id"])
+            await connection.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3", total, guild_id, listing["seller_id"])
             await add_card(connection, guild_id, user_id, listing["card_slug"], quantity)
             remaining = listing["remaining"] - quantity
             await connection.execute("UPDATE card_market_listings SET remaining=$1,status=CASE WHEN $1=0 THEN 'sold' ELSE status END WHERE id=$2", remaining, listing_id)
@@ -516,7 +517,7 @@ async def card_row(slug: str):
 async def add_card(connection, guild_id: int, user_id: int, slug: str, quantity: int = 1) -> None:
     await connection.execute(
         """INSERT INTO card_inventory_global (guild_id,user_id,card_slug,quantity)
-           VALUES ($1,$2,$3,$4) ON CONFLICT (guild_id,user_id,card_slug) DO UPDATE
+           VALUES ($1,$2,$3,$4) ON CONFLICT (user_id,card_slug) DO UPDATE
            SET quantity=card_inventory_global.quantity+EXCLUDED.quantity""",
         guild_id, user_id, slug, quantity,
     )
@@ -553,7 +554,7 @@ async def award_xp(guild_id: int, user_id: int, amount: int) -> tuple[int, bool]
                SET xp = xp + $3,
                    level = GREATEST(level, (xp + $3) / 1000 + 1),
                    updated_at = NOW()
-               WHERE ($1 IS NOT NULL) AND user_id = $2
+               WHERE ($1::BIGINT IS NOT NULL) AND user_id = $2
                RETURNING xp, level,
                          (level > (xp - $3) / 1000 + 1) AS just_leveled_up""",
             guild_id, user_id, amount,
@@ -563,7 +564,7 @@ async def award_xp(guild_id: int, user_id: int, amount: int) -> tuple[int, bool]
             row = await connection.fetchrow(
                 """INSERT INTO card_wallets_global (guild_id, user_id, xp, level)
                    VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (guild_id, user_id) DO UPDATE
+                   ON CONFLICT (user_id) DO UPDATE
                    SET xp = card_wallets_global.xp + $3,
                        level = GREATEST(card_wallets_global.level, (card_wallets_global.xp + $3) / 1000 + 1),
                        updated_at = NOW()
@@ -578,7 +579,7 @@ async def award_xp(guild_id: int, user_id: int, amount: int) -> tuple[int, bool]
 async def claim_set_reward(guild_id: int, user_id: int, set_slug: str):
     status = await db.fetchrow("""SELECT COUNT(c.slug)::int AS total,COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned,
         s.name,s.reward_coins FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE
-        LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2 WHERE s.slug=$3 GROUP BY s.name,s.reward_coins""", guild_id, user_id, set_slug)
+        LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 WHERE s.slug=$3 GROUP BY s.name,s.reward_coins""", guild_id, user_id, set_slug)
     if not status or status["total"] == 0 or status["owned"] < status["total"]:
         return None
     inserted = await db.fetchval("INSERT INTO card_set_claims_global (guild_id,user_id,set_slug) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING set_slug", guild_id, user_id, set_slug)
@@ -586,7 +587,7 @@ async def claim_set_reward(guild_id: int, user_id: int, set_slug: str):
         return None
     reward = status["reward_coins"]
     await ensure_wallet(guild_id, user_id)
-    await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3", reward, guild_id, user_id)
+    await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3", reward, guild_id, user_id)
     await award_xp(guild_id, user_id, 500)
     return status["name"], reward
 
@@ -595,7 +596,7 @@ async def open_card_pack(guild_id: int, user_id: int):
     await ensure_wallet(guild_id, user_id)
     async with db._pool().acquire() as connection:
         async with connection.transaction():
-            wallet = await connection.fetchrow("SELECT * FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE", guild_id, user_id)
+            wallet = await connection.fetchrow("SELECT * FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE", guild_id, user_id)
             if wallet["coins"] < PACK_PRICE:
                 return None, f"El sobre cuesta **{PACK_PRICE} Abo Coins** y tienes **{wallet['coins']}**.", None
             rare_pity = wallet["pity_rare"] + 1 >= PITY_RARE_LIMIT
@@ -613,7 +614,7 @@ async def open_card_pack(guild_id: int, user_id: int):
             has_epic = any(by_slug[s]["rarity"] in {"Épica", "Legendaria"} for s in drawn)
             rare_count = 0 if has_rare else wallet["pity_rare"] + 1
             epic_count = 0 if has_epic else wallet["pity_epic"] + 1
-            await connection.execute("UPDATE card_wallets_global SET coins=coins-$1,pity_rare=$2,pity_epic=$3,packs_opened=packs_opened+1,updated_at=NOW() WHERE ($4 IS NOT NULL) AND user_id=$5", PACK_PRICE, rare_count, epic_count, guild_id, user_id)
+            await connection.execute("UPDATE card_wallets_global SET coins=coins-$1,pity_rare=$2,pity_epic=$3,packs_opened=packs_opened+1,updated_at=NOW() WHERE ($4::BIGINT IS NOT NULL) AND user_id=$5", PACK_PRICE, rare_count, epic_count, guild_id, user_id)
             for slug in drawn:
                 await add_card(connection, guild_id, user_id, slug)
             balance = wallet["coins"] - PACK_PRICE
@@ -880,11 +881,11 @@ async def compare_collections(guild_id: int, user_a: int, user_b: int):
                   COALESCE(a.quantity, 0)::int AS qty_a,
                   COALESCE(b.quantity, 0)::int AS qty_b
            FROM card_catalog c
-           LEFT JOIN card_inventory_global a ON a.card_slug=c.slug AND ($1 IS NOT NULL) AND a.user_id=$2 AND a.quantity>0
-           LEFT JOIN card_inventory_global b ON b.card_slug=c.slug AND ($1 IS NOT NULL) AND b.user_id=$3 AND b.quantity>0
+           LEFT JOIN card_inventory_global a ON a.card_slug=c.slug AND a.user_id=$1 AND a.quantity>0
+           LEFT JOIN card_inventory_global b ON b.card_slug=c.slug AND b.user_id=$2 AND b.quantity>0
            WHERE c.active=TRUE
            ORDER BY c.rarity DESC, c.name""",
-        guild_id, user_a, user_b,
+        user_a, user_b,
     )
     solo_a = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] == 0]
     solo_b = [r for r in rows if r["qty_b"] > 0 and r["qty_a"] == 0]
@@ -927,11 +928,11 @@ class FusionConfirmView(discord.ui.View):
         async with db._pool().acquire() as conn:
             async with conn.transaction():
                 inv = await conn.fetchrow(
-                    "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                    "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
                     self.guild_id, self.user_id, self.card_row_data["slug"],
                 )
                 wallet = await conn.fetchrow(
-                    "SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE",
+                    "SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE",
                     self.guild_id, self.user_id,
                 )
                 if not inv or inv["quantity"] < self.copies:
@@ -945,11 +946,11 @@ class FusionConfirmView(discord.ui.View):
                         view=None,
                     )
                 await conn.execute(
-                    "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2 IS NOT NULL) AND user_id=$3 AND card_slug=$4",
+                    "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3 AND card_slug=$4",
                     self.copies, self.guild_id, self.user_id, self.card_row_data["slug"],
                 )
                 await conn.execute(
-                    "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3",
+                    "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",
                     self.cost, self.guild_id, self.user_id,
                 )
                 await add_card(conn, self.guild_id, self.user_id, self.result_slug)
@@ -1044,11 +1045,11 @@ class EvolveConfirmView(discord.ui.View):
         async with db._pool().acquire() as conn:
             async with conn.transaction():
                 inv = await conn.fetchrow(
-                    "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                    "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
                     self.guild_id, self.user_id, slug,
                 )
                 wallet = await conn.fetchrow(
-                    "SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE",
+                    "SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE",
                     self.guild_id, self.user_id,
                 )
                 if not inv or inv["quantity"] < cost_cop:
@@ -1065,18 +1066,18 @@ class EvolveConfirmView(discord.ui.View):
                     )
                 # Consumir copias y monedas
                 await conn.execute(
-                    "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2 IS NOT NULL) AND user_id=$3 AND card_slug=$4",
+                    "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3 AND card_slug=$4",
                     cost_cop, self.guild_id, self.user_id, slug,
                 )
                 await conn.execute(
-                    "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3",
+                    "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",
                     cost_coins, self.guild_id, self.user_id,
                 )
                 # Guardar / actualizar nivel de evolución personal
                 await conn.execute(
                     """INSERT INTO card_inventory_evo_global (guild_id,user_id,card_slug,evo_level,stat_boost_pct)
                        VALUES ($1,$2,$3,$4,$5)
-                       ON CONFLICT (guild_id,user_id,card_slug) DO UPDATE SET
+                       ON CONFLICT (user_id,card_slug) DO UPDATE SET
                          evo_level      = EXCLUDED.evo_level,
                          stat_boost_pct = EXCLUDED.stat_boost_pct""",
                     self.guild_id, self.user_id, slug, new_level, new_boost,
@@ -1150,7 +1151,7 @@ class TradeView(discord.ui.View):
         return True
     @discord.ui.button(label="Añadir carta", emoji="🎴", style=discord.ButtonStyle.primary)
     async def add_card(self, interaction, button):
-        rows=await db.fetch("""SELECT c.slug,c.name,c.rarity,i.quantity FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug WHERE c.active=TRUE AND ($1 IS NOT NULL) AND i.user_id=$2 AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25""", interaction.guild_id, interaction.user.id)
+        rows=await db.fetch("""SELECT c.slug,c.name,c.rarity,i.quantity FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug WHERE c.active=TRUE AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25""", interaction.guild_id, interaction.user.id)
         if not rows: return await interaction.response.send_message("No tienes cartas disponibles para ofrecer.", ephemeral=True)
         await interaction.response.send_message("Elige una carta y después indica la cantidad:", view=TradeCardPickerView(self.cog,self.channel_id,interaction.user.id,rows), ephemeral=True)
     @discord.ui.button(label="Confirmar oferta", emoji="✅", style=discord.ButtonStyle.success)
@@ -1245,7 +1246,7 @@ class CardsCog(commands.Cog):
         async with db._pool().acquire() as connection:
             async with connection.transaction():
                 wallet = await connection.fetchrow(
-                    "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE",
+                    "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE",
                     interaction.guild_id, interaction.user.id,
                 )
                 last = wallet["daily_claimed_at"]
@@ -1256,7 +1257,7 @@ class CardsCog(commands.Cog):
                 streak = wallet["daily_streak"] + 1 if last and (now.date() - last.date()) == timedelta(days=1) else 1
                 reward = min(DAILY_BASE + (streak - 1) * 25, 350)
                 await connection.execute(
-                    "UPDATE card_wallets_global SET coins=coins+$1, daily_claimed_at=$2, daily_streak=$3, updated_at=NOW() WHERE ($4 IS NOT NULL) AND user_id=$5",
+                    "UPDATE card_wallets_global SET coins=coins+$1, daily_claimed_at=$2, daily_streak=$3, updated_at=NOW() WHERE ($4::BIGINT IS NOT NULL) AND user_id=$5",
                     reward, now, streak, interaction.guild_id, interaction.user.id,
                 )
                 balance = wallet["coins"] + reward
@@ -1271,7 +1272,7 @@ class CardsCog(commands.Cog):
     @app_commands.guild_only()
     async def saldo_cartas(self, interaction: discord.Interaction):
         await ensure_wallet(interaction.guild_id, interaction.user.id)
-        coins = await db.fetchval("SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", interaction.guild_id, interaction.user.id)
+        coins = await db.fetchval("SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", interaction.guild_id, interaction.user.id)
         await interaction.response.send_message(embed=notice("Tu saldo 💰", f"Tienes **{coins_text(coins)} Abo Coins**.\nUsa `/sobre` para comprar un sobre de 3 cartas."), ephemeral=True)
 
     @app_commands.command(name="perfil", description="Muestra tu perfil de coleccionista")
@@ -1280,15 +1281,15 @@ class CardsCog(commands.Cog):
     async def perfil(self, interaction: discord.Interaction, usuario: discord.Member | None = None):
         target = usuario or interaction.user
         await ensure_wallet(interaction.guild_id, target.id)
-        wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", interaction.guild_id, target.id)
+        wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", interaction.guild_id, target.id)
         stats = await db.fetchrow("""SELECT COUNT(*) FILTER (WHERE quantity>0)::int AS unique_cards,
             COALESCE(SUM(quantity),0)::int AS total_cards,COALESCE(SUM(quantity*c.base_value),0)::bigint AS value
-            FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1 IS NOT NULL) AND i.user_id=$2""", interaction.guild_id, target.id)
-        rank = await db.fetchval("""SELECT COUNT(*)+1 FROM (SELECT i.user_id,SUM(i.quantity*c.base_value) AS value FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1 IS NOT NULL) GROUP BY i.user_id) x WHERE x.value > $2""", interaction.guild_id, stats["value"]) or 1
+            FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1::BIGINT IS NOT NULL) AND i.user_id=$2""", interaction.guild_id, target.id)
+        rank = await db.fetchval("""SELECT COUNT(*)+1 FROM (SELECT i.user_id,SUM(i.quantity*c.base_value) AS value FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1::BIGINT IS NOT NULL) GROUP BY i.user_id) x WHERE x.value > $2""", interaction.guild_id, stats["value"]) or 1
         fav = await db.fetchrow(
             """SELECT c.name,c.rarity,c.emoji_name,c.emoji_id FROM card_inventory_global i
                JOIN card_catalog c ON c.slug=i.card_slug
-               WHERE ($1 IS NOT NULL) AND i.user_id=$2 AND i.is_favorite=TRUE LIMIT 1""",
+               WHERE ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.is_favorite=TRUE LIMIT 1""",
             interaction.guild_id, target.id
         )
         fav_line = f"\n\n⭐ Favorita: {card_emoji(fav)} **{fav['name']}** ({fav['rarity']})" if fav else ""
@@ -1310,7 +1311,7 @@ class CardsCog(commands.Cog):
                 ephemeral=True,
             )
         owned = await db.fetchval(
-            "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3",
+            "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3",
             gid, uid, row["slug"]
         )
         if not owned or owned < 1:
@@ -1319,8 +1320,8 @@ class CardsCog(commands.Cog):
                 ephemeral=True,
             )
         # Quitar favorita anterior y poner la nueva
-        await db.execute("UPDATE card_inventory_global SET is_favorite=FALSE WHERE ($1 IS NOT NULL) AND user_id=$2 AND is_favorite=TRUE", gid, uid)
-        await db.execute("UPDATE card_inventory_global SET is_favorite=TRUE WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3", gid, uid, row["slug"])
+        await db.execute("UPDATE card_inventory_global SET is_favorite=FALSE WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND is_favorite=TRUE", gid, uid)
+        await db.execute("UPDATE card_inventory_global SET is_favorite=TRUE WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3", gid, uid, row["slug"])
         await interaction.response.send_message(
             embed=notice("Favorita actualizada ⭐", f"{card_emoji(row)} **{row['name']}** es ahora tu carta favorita. Aparecerá en tu `/perfil`."),
             ephemeral=True,
@@ -1332,7 +1333,7 @@ class CardsCog(commands.Cog):
         rows = await db.fetch(
             """SELECT c.slug,c.name,c.rarity,i.quantity
                FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug
-               WHERE c.active=TRUE AND ($1 IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
+               WHERE c.active=TRUE AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
                  AND (c.name ILIKE $3 OR c.slug ILIKE $3)
                ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name LIMIT 25""",
             interaction.guild_id, interaction.user.id, query, f"{(current or '').strip()}%",
@@ -1397,7 +1398,7 @@ class CardsCog(commands.Cog):
         copies, cost, result_rarity = rule["copies"], rule["cost"], rule["result"]
 
         owned = await db.fetchval(
-            "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3",
+            "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3",
             gid, uid, row["slug"],
         ) or 0
         if owned < copies:
@@ -1408,7 +1409,7 @@ class CardsCog(commands.Cog):
             )
 
         await ensure_wallet(gid, uid)
-        wallet = await db.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", gid, uid)
+        wallet = await db.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", gid, uid)
         if not wallet or wallet["coins"] < cost:
             return await interaction.response.send_message(
                 embed=notice("Monedas insuficientes",
@@ -1445,7 +1446,7 @@ class CardsCog(commands.Cog):
         rows = await db.fetch(
             """SELECT c.slug,c.name,c.rarity,i.quantity
                FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug
-               WHERE c.active=TRUE AND ($1 IS NOT NULL) AND i.user_id=$2 AND i.quantity>=3
+               WHERE c.active=TRUE AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.quantity>=3
                  AND c.rarity IN ('Común','Rara','Épica')
                  AND (c.name ILIKE $3 OR c.slug ILIKE $3)
                ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name
@@ -1488,7 +1489,7 @@ class CardsCog(commands.Cog):
 
         # Nivel actual del usuario para esta carta
         evo_data = await db.fetchrow(
-            "SELECT evo_level, stat_boost_pct FROM card_inventory_evo_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3",
+            "SELECT evo_level, stat_boost_pct FROM card_inventory_evo_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3",
             gid, uid, row["slug"],
         )
         current_level = evo_data["evo_level"] if evo_data else 0
@@ -1505,7 +1506,7 @@ class CardsCog(commands.Cog):
         copies_needed = evo["cost_copies"]
         cost = evo["cost_coins"]
         owned = await db.fetchval(
-            "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3",
+            "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3",
             gid, uid, row["slug"],
         ) or 0
         if owned < copies_needed:
@@ -1516,7 +1517,7 @@ class CardsCog(commands.Cog):
             )
 
         await ensure_wallet(gid, uid)
-        wallet = await db.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", gid, uid)
+        wallet = await db.fetchrow("SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", gid, uid)
         if not wallet or wallet["coins"] < cost:
             return await interaction.response.send_message(
                 embed=notice("Monedas insuficientes",
@@ -1552,9 +1553,9 @@ class CardsCog(commands.Cog):
                       COALESCE(ie.evo_level,0)::int AS evo_level
                FROM card_catalog c
                JOIN card_inventory_global i ON i.card_slug=c.slug
-                    AND ($1 IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
+                    AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
                JOIN card_evolutions e ON e.base_slug=c.slug
-               LEFT JOIN card_inventory_evo_global ie ON ($1 IS NOT NULL) AND ie.user_id=$2 AND ie.card_slug=c.slug
+               LEFT JOIN card_inventory_evo_global ie ON ($1::BIGINT IS NOT NULL) AND ie.user_id=$2 AND ie.card_slug=c.slug
                WHERE c.active=TRUE
                  AND COALESCE(ie.evo_level,0) < e.max_level
                  AND i.quantity >= e.cost_copies
@@ -1687,7 +1688,7 @@ class CardsCog(commands.Cog):
         rows = await db.fetch("""SELECT s.slug,s.name,s.description,COUNT(c.slug)::int AS total,
             COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned
             FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE
-            LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2
+            LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2
             WHERE s.active=TRUE GROUP BY s.slug,s.name,s.description ORDER BY s.name""", interaction.guild_id, interaction.user.id)
         description = "\n".join(f"🎴 **{r['name']}** · {r['owned']}/{r['total']} cartas\n{r['description']}" for r in rows) or "Todavía no hay sets disponibles."
         await interaction.response.send_message(embed=notice("Sets de Abo Cards 🗂️", description))
@@ -1700,7 +1701,7 @@ class CardsCog(commands.Cog):
         if not row:
             return await interaction.response.send_message(embed=notice("Set no encontrado", "Usa `/sets` para ver los sets disponibles.", 0xED4245), ephemeral=True)
         cards = await db.fetch("""SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity
-            FROM card_catalog c LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2
+            FROM card_catalog c LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2
             WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name""", interaction.guild_id, interaction.user.id, row["slug"])
         description = "\n".join(f"{'✅' if c['quantity'] else '❌'} {card_emoji(c)} **{c['name']}** · ×{c['quantity']}" for c in cards) or "Este set no tiene cartas."
         owned = sum(1 for c in cards if c["quantity"] > 0)
@@ -1717,8 +1718,8 @@ class CardsCog(commands.Cog):
         row = await db.fetchrow("SELECT * FROM card_catalog WHERE active=TRUE AND (slug=$1 OR name ILIKE $2)", nombre.lower(), nombre)
         if not row:
             return await interaction.response.send_message(embed=notice("Carta no encontrada", "Revisa el nombre en `/coleccion` o `/ranking_cartas`.", 0xED4245), ephemeral=True)
-        owned = await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"]) or 0
-        evo_data = await db.fetchrow("SELECT evo_level, stat_boost_pct FROM card_inventory_evo_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"])
+        owned = await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"]) or 0
+        evo_data = await db.fetchrow("SELECT evo_level, stat_boost_pct FROM card_inventory_evo_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3", interaction.guild_id, interaction.user.id, row["slug"])
         evo_level = evo_data["evo_level"] if evo_data else 0
         evo_boost = evo_data["stat_boost_pct"] if evo_data else 0
         description = row.get("description") or "Conoce a este personaje de Abo."
@@ -1799,7 +1800,7 @@ class CardsCog(commands.Cog):
         session=self.trade_sessions.get(channel_id)
         if not session or user_id not in {session["user_a"],session["user_b"]}: return await interaction.response.send_message("Este tradeo ya no está activo.",ephemeral=True)
         if quantity<1 or quantity>999: return await interaction.response.send_message("La cantidad debe estar entre 1 y 999.",ephemeral=True)
-        owned=await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3",session["guild_id"],user_id,slug) or 0
+        owned=await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3",session["guild_id"],user_id,slug) or 0
         current=session["offers"][user_id].get(slug,{}).get("quantity",0)
         if current+quantity>owned: return await interaction.response.send_message(f"No puedes ofrecer ×{current+quantity}; solo tienes ×{owned}.",ephemeral=True)
         row=await card_row(slug)
@@ -1895,8 +1896,19 @@ class CardsCog(commands.Cog):
             return True
         if command == "comparar":
             target = message.mentions[0] if message.mentions else None
+            if target is None and argument:
+                id_match = re.fullmatch(r"<@!?(\d+)>|\d+", argument.strip())
+                target_id = int(next(group for group in id_match.groups() if group)) if id_match else None
+                if target_id:
+                    target = message.guild.get_member(target_id)
+                else:
+                    target = discord.utils.find(
+                        lambda member: member.display_name.casefold() == argument.casefold()
+                        or member.name.casefold() == argument.casefold(),
+                        message.guild.members,
+                    )
             if not target or target.bot or target.id == message.author.id:
-                await message.channel.send(embed=notice("Uso de !comparar", "Menciona a otro miembro: `!comparar @usuario`.", 0xFEE75C))
+                await message.channel.send(embed=notice("Uso de !comparar", "Menciona a otro miembro o usa su ID: `!comparar @usuario`.", 0xFEE75C))
                 return True
             gid = message.guild.id
             solo_yo, solo_el, ambos = await compare_collections(gid, message.author.id, target.id)
@@ -1929,6 +1941,7 @@ class CardsCog(commands.Cog):
                 "name_a": message.author.display_name, "name_b": target.display_name,
                 "offers": {message.author.id: {}, target.id: {}},
                 "confirmed": {message.author.id: False, target.id: False},
+                "last_activity_at": time.monotonic(),
             }
             self.trade_sessions[message.channel.id]["trade_id"] = await db.fetchval("""INSERT INTO card_trade_sessions (guild_id,user_a,user_b,channel_id,offer_a,offer_b,status)
                 VALUES ($1,$2,$3,$4,'{}'::jsonb,'{}'::jsonb,'active') RETURNING id""", message.guild.id, message.author.id, target.id, message.channel.id)
@@ -1938,20 +1951,20 @@ class CardsCog(commands.Cog):
         if command == "perfil":
             target = message.mentions[0] if message.mentions else message.author
             await ensure_wallet(message.guild.id, target.id)
-            wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", message.guild.id, target.id)
-            stats = await db.fetchrow("SELECT COUNT(*) FILTER (WHERE quantity>0)::int AS unique_cards,COALESCE(SUM(quantity),0)::int AS total_cards,COALESCE(SUM(quantity*c.base_value),0)::bigint AS value FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1 IS NOT NULL) AND i.user_id=$2", message.guild.id, target.id)
+            wallet = await db.fetchrow("SELECT coins,xp,level,packs_opened,pity_rare,pity_epic FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", message.guild.id, target.id)
+            stats = await db.fetchrow("SELECT COUNT(*) FILTER (WHERE quantity>0)::int AS unique_cards,COALESCE(SUM(quantity),0)::int AS total_cards,COALESCE(SUM(quantity*c.base_value),0)::bigint AS value FROM card_inventory_global i JOIN card_catalog c ON c.slug=i.card_slug WHERE ($1::BIGINT IS NOT NULL) AND i.user_id=$2", message.guild.id, target.id)
             embed = notice(f"Perfil de {target.display_name} 🪪", f"Nivel: **{wallet['level']}** · XP: **{wallet['xp']}/{wallet['level']*1000}**\nSaldo: **{coins_text(wallet['coins'])} Abo Coins**\n\nCartas únicas: **{stats['unique_cards']}**\nCartas totales: **{stats['total_cards']}**\nValor: **{coins_text(stats['value'])} Abo Coins**\nSobres abiertos: **{wallet['packs_opened']}**\nPity rara: **{wallet['pity_rare']}/{PITY_RARE_LIMIT}**\nPity épica: **{wallet['pity_epic']}/{PITY_EPIC_LIMIT}**")
             await message.channel.send(embed=embed); return True
         if command in {"sets", "set"}:
             set_name = argument if command == "set" else ""
             if command == "sets":
-                rows = await db.fetch("""SELECT s.slug,s.name,s.description,COUNT(c.slug)::int AS total,COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2 WHERE s.active=TRUE GROUP BY s.slug,s.name,s.description ORDER BY s.name""", message.guild.id, message.author.id)
+                rows = await db.fetch("""SELECT s.slug,s.name,s.description,COUNT(c.slug)::int AS total,COUNT(i.card_slug) FILTER (WHERE COALESCE(i.quantity,0)>0)::int AS owned FROM card_sets s LEFT JOIN card_catalog c ON c.set_slug=s.slug AND c.active=TRUE LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 WHERE s.active=TRUE GROUP BY s.slug,s.name,s.description ORDER BY s.name""", message.guild.id, message.author.id)
                 text = "\n".join(f"🎴 **{r['name']}** · {r['owned']}/{r['total']} cartas" for r in rows) or "Todavía no hay sets disponibles."
                 await message.channel.send(embed=notice("Sets de Abo Cards 🗂️", text)); return True
             row = await db.fetchrow("SELECT slug,name,description FROM card_sets WHERE active=TRUE AND (slug=$1 OR name ILIKE $2)", set_name.lower(), set_name)
             if not row:
                 await message.channel.send(embed=notice("Set no encontrado", "Usa `!sets` para ver los sets disponibles.", 0xED4245)); return True
-            cards = await db.fetch("SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity FROM card_catalog c LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2 WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name", message.guild.id, message.author.id, row["slug"])
+            cards = await db.fetch("SELECT c.name,c.rarity,c.emoji_name,c.emoji_id,COALESCE(i.quantity,0)::int AS quantity FROM card_catalog c LEFT JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 WHERE c.active=TRUE AND c.set_slug=$3 ORDER BY c.rarity DESC,c.name", message.guild.id, message.author.id, row["slug"])
             text = "\n".join(f"{'✅' if c['quantity'] else '❌'} {card_emoji(c)} **{c['name']}** · ×{c['quantity']}" for c in cards)
             await message.channel.send(embed=notice(f"{row['name']} 🗂️", f"Progreso: **{sum(1 for c in cards if c['quantity']>0)}/{len(cards)}**\n\n{text}"))
             reward = await claim_set_reward(message.guild.id, message.author.id, row["slug"])
@@ -1959,7 +1972,7 @@ class CardsCog(commands.Cog):
             return True
         if command == "saldo_cartas":
             await ensure_wallet(message.guild.id, message.author.id)
-            coins = await db.fetchval("SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2", message.guild.id, message.author.id)
+            coins = await db.fetchval("SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2", message.guild.id, message.author.id)
             await message.channel.send(embed=notice("Tu saldo 💰", f"Tienes **{coins_text(coins)} Abo Coins**. Usa `!sobre` para abrir un sobre."))
             return True
         if command == "diario_cartas":
@@ -1968,13 +1981,13 @@ class CardsCog(commands.Cog):
             async with db._pool().acquire() as connection:
                 async with connection.transaction():
                     wallet = await connection.fetchrow(
-                        "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE",
+                        "SELECT coins, daily_claimed_at, daily_streak FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE",
                         message.guild.id, message.author.id)
                     if wallet["daily_claimed_at"] and wallet["daily_claimed_at"].date() == now.date():
                         await message.channel.send(embed=notice("Diario ya reclamado ⏳", "Vuelve mañana para recibir más Abo Coins.", 0xFEE75C)); return True
                     streak = wallet["daily_streak"] + 1 if wallet["daily_claimed_at"] and (now.date() - wallet["daily_claimed_at"].date()) == timedelta(days=1) else 1
                     reward = min(DAILY_BASE + (streak - 1) * 25, 350)
-                    await connection.execute("UPDATE card_wallets_global SET coins=coins+$1,daily_claimed_at=$2,daily_streak=$3,updated_at=NOW() WHERE ($4 IS NOT NULL) AND user_id=$5", reward, now, streak, message.guild.id, message.author.id)
+                    await connection.execute("UPDATE card_wallets_global SET coins=coins+$1,daily_claimed_at=$2,daily_streak=$3,updated_at=NOW() WHERE ($4::BIGINT IS NOT NULL) AND user_id=$5", reward, now, streak, message.guild.id, message.author.id)
             await message.channel.send(embed=notice("Recompensa diaria ✨", f"Recibiste **{coins_text(reward)} Abo Coins**. Racha: **{streak} días**." , 0x57F287))
             level, leveled = await award_xp(message.guild.id, message.author.id, XP_PER_DAILY)
             if leveled: await message.channel.send(embed=await card_message(message.guild.id, "level_up", level=level, xp=level * 1000))
@@ -2004,7 +2017,7 @@ class CardsCog(commands.Cog):
             row = await card_row(argument)
             if not row:
                 await message.channel.send(embed=notice("Carta no encontrada", "Revisa el nombre e inténtalo de nuevo.", 0xED4245)); return True
-            owned = await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3", message.guild.id, message.author.id, row["slug"]) or 0
+            owned = await db.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3", message.guild.id, message.author.id, row["slug"]) or 0
             description = row.get("description") or "Conoce a este personaje de Abo."
             embed = notice(f"{card_emoji(row)} {row['name']}", description, int(row.get("embed_color") or rarity_color(row["rarity"])))
             embed.add_field(name="Rareza", value=row["rarity"], inline=True)
@@ -2077,6 +2090,10 @@ class CardsCog(commands.Cog):
             return False
         content = re.sub(r"<@!?\d+>", "", message.content).strip()
         lowered = content.lower()
+        # Los comandos ! deben seguir llegando a handle_card_prefix; solo los
+        # comandos propios del tradeo se procesan aquí.
+        if lowered.startswith("!") and lowered not in {"!cancelar", "!cancelado", "!confirmar", "!confirmad", "!confirmado"}:
+            return False
         if lowered in {"!cancelar", "!cancelado"}:
             self.trade_sessions.pop(message.channel.id, None)
             if session.get("trade_id"):
@@ -2131,7 +2148,7 @@ class CardsCog(commands.Cog):
                         checks.append((user_id, slug, data["quantity"]))
                 for user_id, slug, quantity in sorted(checks):
                     owned = await connection.fetchval(
-                        "SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                        "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
                         session["guild_id"], user_id, slug,
                     ) or 0
                     if owned < quantity:
@@ -2139,7 +2156,7 @@ class CardsCog(commands.Cog):
                 for sender, receiver in ((session["user_a"], session["user_b"]), (session["user_b"], session["user_a"])):
                     for slug, data in offers[sender].items():
                         await connection.execute(
-                            "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2 IS NOT NULL) AND user_id=$3 AND card_slug=$4",
+                            "UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3 AND card_slug=$4",
                             data["quantity"], session["guild_id"], sender, slug,
                         )
                         await add_card(connection, session["guild_id"], receiver, slug, data["quantity"])
@@ -2185,7 +2202,7 @@ class CardsCog(commands.Cog):
 
         await ensure_wallet(interaction.guild_id, interaction.user.id)
         wallet_coins = await db.fetchval(
-            "SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2",
+            "SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2",
             interaction.guild_id, interaction.user.id,
         ) or 0
 
@@ -2237,7 +2254,7 @@ class CardsCog(commands.Cog):
                     async with db._pool().acquire() as conn:
                         async with conn.transaction():
                             wallet = await conn.fetchrow(
-                                "SELECT coins FROM card_wallets_global WHERE ($1 IS NOT NULL) AND user_id=$2 FOR UPDATE",
+                                "SELECT coins FROM card_wallets_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 FOR UPDATE",
                                 inter.guild_id, inter.user.id,
                             )
                             if not wallet or wallet["coins"] < price:
@@ -2250,7 +2267,7 @@ class CardsCog(commands.Cog):
                                     ephemeral=True,
                                 )
                             await conn.execute(
-                                "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3",
+                                "UPDATE card_wallets_global SET coins=coins-$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",
                                 price, inter.guild_id, inter.user.id,
                             )
                             await add_card(conn, inter.guild_id, inter.user.id, card["slug"])
@@ -2279,10 +2296,10 @@ class CardsCog(commands.Cog):
             return await interaction.response.send_message(embed=notice("Publicación inválida", "Carta, cantidad y precio deben ser válidos.", 0xED4245), ephemeral=True)
         async with db._pool().acquire() as connection:
             async with connection.transaction():
-                owned = await connection.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1 IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE", interaction.guild_id, interaction.user.id, row["slug"]) or 0
+                owned = await connection.fetchval("SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE", interaction.guild_id, interaction.user.id, row["slug"]) or 0
                 if owned < cantidad:
                     return await interaction.response.send_message(embed=notice("No tienes suficientes copias", f"Posees **×{owned}** de {row['name']}.", 0xED4245), ephemeral=True)
-                await connection.execute("UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2 IS NOT NULL) AND user_id=$3 AND card_slug=$4", cantidad, interaction.guild_id, interaction.user.id, row["slug"])
+                await connection.execute("UPDATE card_inventory_global SET quantity=quantity-$1 WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3 AND card_slug=$4", cantidad, interaction.guild_id, interaction.user.id, row["slug"])
                 await connection.execute("INSERT INTO card_market_listings (guild_id,seller_id,card_slug,quantity,remaining,price_each) VALUES ($1,$2,$3,$4,$4,$5)", interaction.guild_id, interaction.user.id, row["slug"], cantidad, precio)
         await interaction.response.send_message(embed=notice("Carta publicada 🏪", f"Publicaste **×{cantidad} {card_emoji(row)} {row['name']}** a **{coins_text(precio)} Abo Coins** cada una."), ephemeral=True)
 
@@ -2292,7 +2309,7 @@ class CardsCog(commands.Cog):
         rows = await db.fetch(
             """SELECT c.slug,c.name,c.rarity,i.quantity
                FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug
-               WHERE c.active=TRUE AND ($1 IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
+               WHERE c.active=TRUE AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 AND i.quantity>0
                  AND (c.name ILIKE $3 OR c.slug ILIKE $3)
                ORDER BY CASE WHEN c.name ILIKE $4 THEN 0 ELSE 1 END, c.rarity DESC, c.name
                LIMIT 25""",
@@ -2359,7 +2376,7 @@ class CardsCog(commands.Cog):
         team_size = 1 if mode == "1v1" else BATTLE_TEAM_SIZE
         choices=[]
         for user_id in (user_a,user_b):
-            rows=await db.fetch("SELECT c.*, i.quantity AS owned_quantity FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1 IS NOT NULL) AND i.user_id=$2 WHERE c.active=TRUE AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25",guild_id,user_id)
+            rows=await db.fetch("SELECT c.*, i.quantity AS owned_quantity FROM card_catalog c JOIN card_inventory_global i ON i.card_slug=c.slug AND ($1::BIGINT IS NOT NULL) AND i.user_id=$2 WHERE c.active=TRUE AND i.quantity>0 ORDER BY c.rarity DESC,c.name LIMIT 25",guild_id,user_id)
             if not rows:
                 return await interaction.edit_original_response(embed=notice("No hay personajes disponibles",f"<@{user_id}> necesita una carta en su colección.",0xED4245),view=None)
             if mode == "3v3" and len(rows) < BATTLE_TEAM_SIZE:
@@ -2623,7 +2640,7 @@ class CardsCog(commands.Cog):
         await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message,'teams':{str(u):[f['card']['slug'] for f in t] for u,t in session.get('teams',{}).items()}}),session['db_id'])
         # ── Recompensa: 100 Abo Coins al ganador (constante global BATTLE_REWARD) ─
         await ensure_wallet(session['guild_id'],winner_id)
-        await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2 IS NOT NULL) AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
+        await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
         reward_msg=f"\n\n🏆 Pelea terminada. <@{winner_id}> gana **+{coins_text(BATTLE_REWARD)} Abo Coins**."
         final_embed=self.battle_embed(session,message+reward_msg)
         rematch_view=RematchView(self,session,winner_id,loser_id)
