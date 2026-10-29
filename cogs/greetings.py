@@ -62,35 +62,15 @@ class GreetingsCog(commands.Cog):
     @app_commands.command(name="welcome_config", description="Configura el canal, texto e imagen de bienvenida")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(
-        canal="Canal donde se publicarán las bienvenidas",
-        texto="Texto personalizado; admite variables como {user} y {server}",
-        imagen_url="URL pública de una imagen (opcional; déjala vacía para no usar imagen)",
-    )
-    async def welcome_config(
-        self,
-        interaction: discord.Interaction,
-        canal: discord.TextChannel,
-        texto: str,
-        imagen_url: str = "",
-    ):
+    @app_commands.describe(canal="Canal donde se publicarán las bienvenidas", texto="Texto personalizado; admite variables como {user} y {server}", imagen_url="URL pública de una imagen (opcional)")
+    async def welcome_config(self, interaction: discord.Interaction, canal: discord.TextChannel, texto: str, imagen_url: str = ""):
         await self._save_greeting(interaction, "welcome", canal, texto, imagen_url)
 
     @app_commands.command(name="leave_config", description="Configura el canal, texto e imagen de despedida")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(
-        canal="Canal donde se publicarán las despedidas",
-        texto="Texto personalizado; admite variables como {user} y {server}",
-        imagen_url="URL pública de una imagen (opcional; déjala vacía para no usar imagen)",
-    )
-    async def leave_config(
-        self,
-        interaction: discord.Interaction,
-        canal: discord.TextChannel,
-        texto: str,
-        imagen_url: str = "",
-    ):
+    @app_commands.describe(canal="Canal donde se publicarán las despedidas", texto="Texto personalizado; admite variables como {user} y {server}", imagen_url="URL pública de una imagen (opcional)")
+    async def leave_config(self, interaction: discord.Interaction, canal: discord.TextChannel, texto: str, imagen_url: str = ""):
         await self._save_greeting(interaction, "leave", canal, texto, imagen_url)
 
     @app_commands.command(name="welcome_off", description="Desactiva los mensajes de bienvenida")
@@ -125,21 +105,45 @@ class GreetingsCog(commands.Cog):
                 return
         if not isinstance(channel, discord.TextChannel):
             return
-        message = _render(text, member)
-        embed = None
+        embed = discord.Embed(description=_render(text, member), color=0x5865F2)
+        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.set_footer(text=f"{member.guild.name} · Abo")
         if image_url:
-            embed = discord.Embed(color=0x5865F2)
             embed.set_image(url=image_url)
         try:
-            await channel.send(
-                content=message,
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(
-                    users=[member], roles=False, everyone=False, replied_user=False,
-                ),
-            )
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False, replied_user=False))
         except discord.HTTPException as error:
             log.warning("No se pudo enviar mensaje de %s en guild %s: %s", prefix, member.guild.id, error)
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        nl = chr(10)
+        embed = discord.Embed(
+            title="¡Gracias por añadir a Abo! 🤖",
+            description=("Abo Cards está listo. Las cartas, monedas y progreso son globales por usuario; "
+                         "mercado, peleas, tradeos, ranking y configuración son propios de este servidor."),
+            color=0x5865F2,
+        )
+        embed.add_field(name="Configuración rápida", value=nl.join([
+            "1. `/welcome_config` para bienvenidas.",
+            "2. `/leave_config` para despedidas.",
+            "3. `/ticket_config` y `/ticket_panel` para tickets.",
+            "4. `/help` para consultar los comandos.",
+        ]), inline=False)
+        embed.add_field(name="Permisos importantes", value=(
+            "Según las funciones, Abo necesita enviar mensajes y embeds, gestionar mensajes, roles, "
+            "canales, moderación y baneos. Revisa sus permisos en Ajustes del servidor."
+        ), inline=False)
+        embed.set_footer(text="Abo · Guía inicial")
+        targets = [guild.owner] if guild.owner else []
+        if guild.system_channel and guild.system_channel not in targets:
+            targets.append(guild.system_channel)
+        for target in targets:
+            try:
+                await target.send(embed=embed)
+                return
+            except (discord.Forbidden, discord.HTTPException):
+                continue
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):

@@ -1,84 +1,73 @@
-"""Comando de ayuda."""
+"""Comando de ayuda categorizado y paginado."""
 import discord
 from discord import app_commands
 from discord.ext import commands
 from core import TU_ID, ROLES_COMANDOS
 
+
+class HelpView(discord.ui.View):
+    def __init__(self, owner_id: int, pages: list[discord.Embed]):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.pages = pages
+        self.index = 0
+        self._sync()
+
+    def _sync(self):
+        self.previous.disabled = self.index <= 0
+        self.next.disabled = self.index >= len(self.pages) - 1
+        self.counter.label = f"Página {self.index + 1}/{len(self.pages)}"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Solo quien abrió esta ayuda puede cambiar de página.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Anterior", emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.index -= 1
+        self._sync()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    @discord.ui.button(label="Página 1/1", style=discord.ButtonStyle.primary)
+    async def counter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Siguiente", emoji="▶️", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.index += 1
+        self._sync()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+
 class HelpCog(commands.Cog):
-    def __init__(self, bot): self.bot = bot
+    def __init__(self, bot):
+        self.bot = bot
 
-    @app_commands.command(name="help", description="Muestra todos los comandos de Abo")
+    @staticmethod
+    def _page(title: str, description: str, category: str, number: int, total: int, color=0x3498DB):
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.set_footer(text=f"Abo Bot • {category} • Página {number}/{total}")
+        return embed
+
+    @app_commands.command(name="help", description="Muestra los comandos de Abo por categorías")
     async def help(self, interaction: discord.Interaction):
-        es_staff = interaction.user.id == TU_ID or any(r.name in ROLES_COMANDOS for r in interaction.user.roles)
-        embed = discord.Embed(title="Comandos de Abo 📖", color=0x3498DB,
-                              description="Todos los slash commands disponibles. Los marcados con 🔒 son solo Staff.")
-        embed.set_thumbnail(url=interaction.guild.me.display_avatar.url)
-
-        # Públicos
-        embed.add_field(name="🤖 IA", value="`@Abo <mensaje>` — Háblale a Abo con IA", inline=False)
-        embed.add_field(name="🎨 Color", value="`/color` — Elige tu color de nombre (incluye Booster Colors si aplica)", inline=False)
-        embed.add_field(name="🎫 Soporte", value="Usa el botón del panel de tickets para abrir una conversación privada con el staff.", inline=False)
-        embed.add_field(name="🎴 Abo Cards", value=(
-            "`/sobre` — Abre un sobre de 3 cartas\n"
-            "`/coleccion [usuario] [filtro]` — Álbum paginado; filtros: `faltantes`, `repetidas` o rareza\n"
-            "`/carta <nombre>` — Mira una carta e imagen\n"
-            "`/diario_cartas` y `/saldo_cartas` — Economía\n"
-            "`/tradeo <usuario>` — Propón cartas, confirma mencionando a Abo con `!confirmar` o cancela con `!cancelar`\n"
-            "Atajos rápidos: `!sobre`, `!coleccion [filtro]`, `!carta <nombre>`, `!saldo`, `!diario`, `!sets`, `!set <nombre>`, `!mercado`, `!ranking`, `!tradeo @usuario`\n"
-            "`/sets` y `/set <nombre>` — Sets temáticos y progreso de colección\n"
-            "`/perfil [usuario]` — Nivel, XP, saldo, colección, ranking y pity\n"
-            "`/cartas_regalar`, `/cartas_retirar`, `/cartas_saldo`, `/cartas_resetear` — Herramientas de administración\n"
-            "`/mercado` — Consulta el mercado y usa botones para comprar o ver al vendedor\n"
-            "`/ranking_cartas` — Ranking por valor de colección\n"
-            "`/pelea <usuario>` — Duelo por turnos con equipos de 3 cartas: habilidad, defensa, cambio de carta y estados"
-        ), inline=False)
-        if es_staff:
-            embed.add_field(name="⚠️ Warns 🔒", value=(
-                "`/warn <user> [razón]` — Warnea a un usuario (auto-mute en 3, auto-ban en 5)\n"
-                "`/warns <user>` — Ve el historial de warns (solo tú lo ves)\n"
-                "`/unwarn <user> <cantidad>` — Quita una cantidad exacta de warns (los más antiguos primero)\n"
-                "`/clearwarns <user>` — Borra todos los warns de un usuario\n"
-                "`/addrol <rol> <users>` — Da un rol a varios usuarios\n"
-                "`/delrol <rol> <users>` — Quita un rol a varios usuarios\n"
-            ), inline=False)
-            embed.add_field(name="🛡️ Moderación 🔒", value=(
-                "`/ban <user> [razón]` — Banea a un usuario\n"
-                "`/mute <user> [tiempo]` — Timeout (ej: `10m`, `2h`, `1d`)\n"
-                "`/limpia <cantidad>` — Borra mensajes (máx 100)"
-            ), inline=False)
-            embed.add_field(name="👻 Purga AFK 🔒", value=(
-                "`/scan` — Escaneo masivo de TODOS los canales (texto, voz, stage e hilos) buscando miembros sin mensajes en 15 días\n"
-                "`/purgaafk` — Patea a los del último /scan\n"
-                "`/purgaexc add <user> [razón]` — Agrega a alguien a excepciones (no se purga aunque esté inactivo)\n"
-                "`/purgaexc quitar <user>` — Quita a alguien de excepciones\n"
-                "`/purgaexc lista` — Ve quién está en excepciones"
-            ), inline=False)
-            embed.add_field(name="🎨 Setup 🔒", value=(
-                "`/create_colors` — Crea los 20 roles de color\n"
-                "`/create_booster_colors` — Crea los 5 roles de color de Booster"
-            ), inline=False)
-            embed.add_field(name="🌈 Staff Colors 🔒", value=(
-                "`/staffcolor` — Elige tu color exclusivo de Staff (solo rol Staff)\n"
-                "*(los roles de color los crea un admin manualmente en Discord)*"
-            ), inline=False)
-            embed.add_field(name="💎 Booster Colors 🔒", value=(
-                "El botón **Booster Colors** dentro de `/color` es exclusivo para Server Boosters\n"
-                "*(Abo crea los 5 roles automáticamente con `/create_booster_colors`)*"
-            ), inline=False)
-            embed.add_field(name="🎫 Tickets 🔒", value=(
-                "`/ticket_config <categoria> <rol_staff> <canal_registros>` — Configura tickets y transcripciones\n"
-                "`/ticket_panel <canal>` — Publica el panel persistente para abrir tickets\n"
-                "`/ticket_transcript <canal>` — Descarga la copia guardada en Neon (solo quien abrió o staff)"
-            ), inline=False)
-            embed.add_field(name="👋 Bienvenidas y despedidas 🔒", value=(
-                "`/welcome_config <canal> <texto> [imagen_url]` y `/leave_config <canal> <texto> [imagen_url]`\n"
-                "Variables disponibles: `{user}`, `{username}`, `{server}`, `{member_count}`\n"
-                "`/welcome_off` y `/leave_off` — Desactiva cada mensaje"
-            ), inline=False)
+        is_staff = interaction.user.id == TU_ID or any(r.name in ROLES_COMANDOS for r in interaction.user.roles)
+        category_pages = [
+            ("Inicio", "🤖 **IA**\nMenciona a Abo en un mensaje para hablar con él.\n\n🎨 **Colores**\n`/color` — Abre el menú de colores.\n\n🎫 **Soporte**\nUsa el panel de tickets para abrir una conversación privada con el staff."),
+            ("Abo Cards · Colección", "🎴 `/sobre` — Compra un sobre de 3 cartas.\n📚 `/coleccion [usuario] [filtro]` — Consulta un álbum paginado.\n🔎 `/carta carta` — Detalles, imagen y estadísticas.\n🗂️ `/sets` — Lista los sets disponibles.\n🗂️ `/set set` — Muestra el progreso de un set.\n👤 `/perfil [usuario]` — Perfil, XP, saldo y colección.\n🏆 `/ranking_cartas` — Ranking por valor de colección."),
+            ("Abo Cards · Economía", "💰 `/diario_cartas` — Reclama tu recompensa diaria.\n💳 `/saldo_cartas` — Consulta tus Abo Coins.\n✨ `/fusionar carta` — Fusiona copias para subir de rareza.\n🌟 `/evolucionar carta` — Mejora los stats de una carta.\n⭐ `/favorita carta` — Marca una carta propia como favorita.\n🏪 `/mercado` — Abre el mercado y compra con botones.\n📤 `/mercado_publicar` — Publica copias propias en el mercado."),
+            ("Tradeos y combates", "🤝 `/tradeo usuario` — Abre un intercambio con selector de cartas, cantidades y confirmaciones.\n⚔️ `/pelea usuario modalidad` — Desafía en `1v1` o `3v3`.\n\nDurante el tradeo puedes usar los botones o el formato de texto como respaldo. En la pelea, cada jugador selecciona sus cartas después de aceptar."),
+        ]
+        if is_staff:
+            category_pages.extend([
+                ("Moderación", "🔨 `/ban usuario [razón]` — Banea a un usuario.\n🤐 `/mute usuario [tiempo]` — Aplica timeout (`10m`, `2h`, `1d`).\n⚠️ `/warn usuario [razón]` — Registra una advertencia.\n📋 `/warns usuario` — Consulta el historial.\n🧹 `/unwarn usuario cantidad` — Retira warns.\n🗑️ `/clearwarns usuario` — Limpia el historial.\n🧽 `/limpia cantidad` — Borra mensajes."),
+                ("Administración y configuración", "🎨 `/create_colors` — Crea roles de colores.\n✨ `/create_booster_colors` — Crea roles para boosters.\n🎫 `/ticket_config` — Configura tickets.\n📌 `/ticket_panel` — Publica el panel de tickets.\n📄 `/ticket_transcript canal` — Obtén una transcripción.\n👋 `/welcome_config` y `/leave_config` — Configura mensajes de entrada y salida.\n🔕 `/welcome_off` y `/leave_off` — Desactiva esos mensajes.\n👻 `/scan`, `/purgaafk` y `/purgaexc` — Herramientas de purga AFK."),
+            ])
             if interaction.user.id == TU_ID:
-                embed.add_field(name="☢️ Reset Servidor 🔒 (solo owner)", value=(
-                    "`/reset_servidor` — Borra TODOS los canales y roles, con backup JSON previo y confirmación por nombre"
-                ), inline=False)
+                category_pages.append(("Owner", "☢️ `/reset_servidor` — Reinicia el servidor con respaldo y confirmación.\n\nEste comando está limitado exclusivamente al owner."))
 
-        embed.set_footer(text="Abo Bot • Prefix: slash /")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        total = len(category_pages)
+        pages = [self._page(f"Comandos de Abo · {title} 📖", text, title, i + 1, total) for i, (title, text) in enumerate(category_pages)]
+        await interaction.response.send_message(embed=pages[0], view=HelpView(interaction.user.id, pages), ephemeral=True)

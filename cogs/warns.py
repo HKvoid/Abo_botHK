@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core import is_staff
+from core import has_guild_permission
 from database import db
 
 
@@ -15,7 +15,8 @@ class WarnsCog(commands.Cog):
 
     @app_commands.command(name="warn", description="[Staff] Warn a un usuario")
     @app_commands.describe(user="A quién warnear", reason="Razón del warn")
-    @is_staff()
+    @app_commands.default_permissions(moderate_members=True)
+    @has_guild_permission("moderate_members")
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str = "Mal comportamiento"):
         await interaction.response.defer()
         await db.execute(
@@ -56,7 +57,8 @@ class WarnsCog(commands.Cog):
 
     @app_commands.command(name="warns", description="Muestra el historial de warns de un usuario")
     @app_commands.describe(user="Usuario a consultar")
-    @is_staff()
+    @app_commands.default_permissions(moderate_members=True)
+    @has_guild_permission("moderate_members")
     async def warns(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.defer(ephemeral=True)
         rows = await db.fetch(
@@ -84,7 +86,8 @@ class WarnsCog(commands.Cog):
 
     @app_commands.command(name="clearwarns", description="[Staff] Borra todos los warns de un usuario")
     @app_commands.describe(user="Usuario a limpiar")
-    @is_staff()
+    @app_commands.default_permissions(moderate_members=True)
+    @has_guild_permission("moderate_members")
     async def clearwarns(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.defer()
         await db.execute(
@@ -95,7 +98,8 @@ class WarnsCog(commands.Cog):
 
     @app_commands.command(name="unwarn", description="[Staff] Quita una cantidad exacta de warns a un usuario")
     @app_commands.describe(user="Usuario a limpiar", cantidad="Cuántos warns quitar (los más antiguos primero)")
-    @is_staff()
+    @app_commands.default_permissions(moderate_members=True)
+    @has_guild_permission("moderate_members")
     async def unwarn(
         self,
         interaction: discord.Interaction,

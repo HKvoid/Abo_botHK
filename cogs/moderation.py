@@ -4,14 +4,15 @@ from datetime import timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
-from core import TU_ID, is_staff, log
+from core import TU_ID, has_guild_permission, log
 
 class ModCog(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
     @app_commands.command(name="ban", description="[Staff] Banea a un usuario")
     @app_commands.describe(user="A quién banear", reason="Razón del ban")
-    @is_staff()
+    @app_commands.default_permissions(ban_members=True)
+    @has_guild_permission("ban_members")
     async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str = "Se pasó de la raya"):
         if user.id == interaction.user.id:
             return await interaction.response.send_message("¿En serio intentas banearte a ti mismo? Que no 😅", ephemeral=True)
@@ -21,7 +22,8 @@ class ModCog(commands.Cog):
 
     @app_commands.command(name="mute", description="[Staff] Da timeout a un usuario")
     @app_commands.describe(user="A quién mutear", time="10m, 2h, 1d")
-    @is_staff()
+    @app_commands.default_permissions(moderate_members=True)
+    @has_guild_permission("moderate_members")
     async def mute(self, interaction: discord.Interaction, user: discord.Member, time: str = "10m"):
         if user.id == interaction.user.id:
             return await interaction.response.send_message("¿En serio intentas mutearte a ti mismo? Que no 😅", ephemeral=True)
@@ -44,7 +46,8 @@ class ModCog(commands.Cog):
 
     @app_commands.command(name="limpia", description="[Staff] Borra mensajes")
     @app_commands.describe(amount="Cantidad 1-100")
-    @is_staff()
+    @app_commands.default_permissions(manage_messages=True)
+    @has_guild_permission("manage_messages")
     async def limpia(self, interaction: discord.Interaction, amount: int = 5):
         if amount > 100: amount = 100
         await interaction.response.defer(ephemeral=True)
@@ -52,7 +55,8 @@ class ModCog(commands.Cog):
         await interaction.followup.send(f"Borré {len(borrados)-1} mensajes, quedó como nuevo 🧹", ephemeral=True)
 
     @app_commands.command(name="addrol", description="Da un rol a varios users")
-    @is_staff()
+    @app_commands.default_permissions(manage_roles=True)
+    @has_guild_permission("manage_roles")
     async def addrol(self, interaction: discord.Interaction, rol: discord.Role, users: str):
         mentions = re.findall(r'<@!?(\d+)>', users)
         if interaction.user.id != TU_ID and rol.position >= interaction.user.top_role.position:
@@ -67,7 +71,8 @@ class ModCog(commands.Cog):
         await interaction.followup.send(f"Rol asignado a: {', '.join(exitos)} ✅\nNo se pudo asignar a: {', '.join(fallos)} ❌" if fallos else f"Rol asignado a: {', '.join(exitos)} ✅")
 
     @app_commands.command(name="delrol", description="Quita un rol a varios users")
-    @is_staff()
+    @app_commands.default_permissions(manage_roles=True)
+    @has_guild_permission("manage_roles")
     async def delrol(self, interaction: discord.Interaction, rol: discord.Role, users: str):
         await interaction.response.defer()
         mentions = re.findall(r'<@!?(\d+)>', users); exitos, fallos = [], []
