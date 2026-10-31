@@ -39,6 +39,15 @@ def has_guild_permission(permission: str):
     return app_commands.check(predicate)
 
 
+def can_moderate_member(actor, target) -> bool:
+    """True when actor may moderate target under Discord role hierarchy."""
+    if actor.id == TU_ID or actor.id == getattr(getattr(actor, "guild", None), "owner_id", None):
+        return True
+    if target.id == actor.id or getattr(target, "id", None) == getattr(getattr(actor, "guild", None), "owner_id", None):
+        return False
+    return actor.top_role > target.top_role
+
+
 def is_staff():
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.id == TU_ID:

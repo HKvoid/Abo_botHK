@@ -250,13 +250,17 @@ CREATE TABLE IF NOT EXISTS card_trade_sessions (
     confirmed_a BOOLEAN NOT NULL DEFAULT FALSE,
     confirmed_b BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at TIMESTAMPTZ
+    completed_at TIMESTAMPTZ,
+    message_id BIGINT,
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE card_trade_sessions DROP CONSTRAINT IF EXISTS card_trade_sessions_status_check;
 ALTER TABLE card_trade_sessions ADD CONSTRAINT card_trade_sessions_status_check CHECK (status IN ('active','completed','cancelled'));
 ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS channel_id BIGINT;
 ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS confirmed_a BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS confirmed_b BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS message_id BIGINT;
+ALTER TABLE card_trade_sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_card_trade_sessions_active ON card_trade_sessions (guild_id, channel_id) WHERE status='active';
 CREATE INDEX IF NOT EXISTS idx_card_trade_sessions_guild ON card_trade_sessions (guild_id, created_at DESC);
 
@@ -299,9 +303,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- Evoluciones: vincula una carta base con su forma evolucionada
 CREATE TABLE IF NOT EXISTS card_evolutions (
     base_slug      TEXT PRIMARY KEY REFERENCES card_catalog(slug),
-    cost_coins     INTEGER NOT NULL DEFAULT 100,
-    cost_copies    INTEGER NOT NULL DEFAULT 2,
-    stat_boost_pct INTEGER NOT NULL DEFAULT 25,
+    cost_coins     INTEGER NOT NULL DEFAULT 100 CHECK (cost_coins > 0),
+    cost_copies    INTEGER NOT NULL DEFAULT 2 CHECK (cost_copies > 0),
+    stat_boost_pct INTEGER NOT NULL DEFAULT 25 CHECK (stat_boost_pct > 0),
     max_level      INTEGER NOT NULL DEFAULT 5,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -316,6 +320,12 @@ CREATE TABLE IF NOT EXISTS card_inventory_evo (
     stat_boost_pct INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id, card_slug)
 );
+
+-- Normalize legacy invalid evolution costs before enforcing positive values.
+UPDATE card_evolutions SET cost_coins=GREATEST(cost_coins,1), cost_copies=GREATEST(cost_copies,1), stat_boost_pct=GREATEST(stat_boost_pct,1), max_level=GREATEST(max_level,1);
+ALTER TABLE card_evolutions DROP CONSTRAINT IF EXISTS card_evolutions_positive_costs;
+ALTER TABLE card_evolutions ADD CONSTRAINT card_evolutions_positive_costs CHECK (cost_coins > 0 AND cost_copies > 0 AND stat_boost_pct > 0 AND max_level > 0);
+INSERT INTO schema_migrations (migration_key) VALUES ('card_evolutions_positive_costs_v1') ON CONFLICT DO NOTHING;
 
 -- Progreso global por usuario: no contiene guild_id a propósito.
 CREATE TABLE IF NOT EXISTS card_wallets_global (
@@ -545,6 +555,13 @@ class Database:
             guild_id,
         )
         return list(rows or [])
+
+    async def get_purge_scan_record(self, guild_id: int):
+        row = await self.fetchrow(
+            "SELECT candidate_user_ids, scanned_at FROM purge_scans WHERE guild_id = $1",
+            guild_id,
+        )
+        return (list(row["candidate_user_ids"] or []), row["scanned_at"]) if row else None
 
     async def migrate_sqlite_if_present(self, path: str = "abo_memoria.db") -> None:
         """Import the old local database once; never delete or modify its source file."""
