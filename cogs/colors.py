@@ -122,8 +122,9 @@ class ColorsCog(commands.Cog):
 
     @app_commands.command(name="color", description="Muestra el menú de colores del servidor")
     async def color_menu(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         embed = await build_combined_color_embed(interaction.guild)
-        await interaction.response.send_message(embed=embed, view=ColorMenuView())
+        await interaction.edit_original_response(embed=embed, view=ColorMenuView())
 
     @app_commands.command(name="create_colors", description="[Staff] Crea los 20 roles de color si no existen")
     @is_staff()

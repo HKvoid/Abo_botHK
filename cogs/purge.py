@@ -82,7 +82,11 @@ class PurgaCog(commands.Cog):
                 continue
 
         excepciones_guild = {row[0] for row in await listar_excepciones(interaction.guild.id)}
-        fantasmas_ids = [mid for mid, count in actividad.items() if count == 0 and mid not in excepciones_guild]
+        fantasmas_ids = [
+            mid for mid, count in actividad.items()
+            if count == 0 and mid not in excepciones_guild
+            and (todos[mid].joined_at is None or todos[mid].joined_at <= hace_15dias)
+        ]
         saltados_por_excepcion = [mid for mid, count in actividad.items() if count == 0 and mid in excepciones_guild]
         await db.save_purge_scan(interaction.guild.id, fantasmas_ids)
 
@@ -93,26 +97,33 @@ class PurgaCog(commands.Cog):
         if not fantasmas_ids:
             return await interaction.followup.send("No encontré miembros inactivos, todos andan vivitos y coleando 🔥" + pie)
 
-        all_mentions = [interaction.guild.get_member(mid).mention for mid in fantasmas_ids if interaction.guild.get_member(mid)]
+        names = [
+            (interaction.guild.get_member(mid).display_name if interaction.guild.get_member(mid) else f"ID:{mid}")
+            for mid in fantasmas_ids
+        ]
         header = f"Scan completado — {len(fantasmas_ids)} inactivo(s) en los últimos 15 días 👻\n"
         chunks = []; current = header
-        for m in all_mentions:
-            if len(current) + len(m) + 1 > 1900:
-                chunks.append(current); current = m + " "
-            else: current += m + " "
+        for name in names:
+            line = f"• {name}\n"
+            if len(current) + len(line) > 1900:
+                chunks.append(current); current = line
+            else: current += line
         chunks.append(current)
         for i, chunk in enumerate(chunks):
             if i == len(chunks) - 1: chunk += f"\nUsa `/purgaafk` cuando quieras expulsarlos.{pie}"
-            await interaction.channel.send(chunk)
+            await interaction.followup.send(chunk, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="purgaafk", description="[Staff] Patea a los del último /scan")
     @app_commands.default_permissions(kick_members=True)
     @has_guild_permission("kick_members")
     async def purgaafk(self, interaction: discord.Interaction):
         guild_id = interaction.guild.id
-        fantasmas_ids = await db.get_purge_scan(guild_id)
-        if not fantasmas_ids:
+        scan = await db.get_purge_scan_record(guild_id)
+        if not scan or not scan[0]:
             return await interaction.response.send_message("Primero ejecuta un `/scan`, por favor 🔍", ephemeral=True)
+        fantasmas_ids, scanned_at = scan
+        if scanned_at and discord.utils.utcnow() - scanned_at > timedelta(days=15):
+            return await interaction.response.send_message("El último `/scan` tiene más de 15 días; ejecuta uno nuevo antes de purgar.", ephemeral=True)
         await interaction.response.defer()
         pateados = 0; protegidos = 0
         for user_id in fantasmas_ids:
@@ -164,6 +175,9 @@ class PurgaCog(commands.Cog):
             mod = interaction.guild.get_member(added_by)
             mod_nombre = mod.display_name if mod else f"ID:{added_by}"
             fecha = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10]
-            embed.add_field(name=nombre, value=f"**Razón:** {razon}\n**Añadido por:** {mod_nombre}\n**Fecha:** {fecha}", inline=False)
+            razon_text = str(razon)
+            if len(razon_text) > 900:
+                razon_text = razon_text[:897] + "..."
+            embed.add_field(name=nombre, value=f"**Razón:** {razon_text}\n**Añadido por:** {mod_nombre}\n**Fecha:** {fecha}", inline=False)
         embed.set_footer(text=f"Total: {len(filas)} excepción(es)")
         await interaction.followup.send(embed=embed, ephemeral=True)

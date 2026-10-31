@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core import has_guild_permission
+from core import has_guild_permission, can_moderate_member
 from database import db
 
 
@@ -18,6 +18,8 @@ class WarnsCog(commands.Cog):
     @app_commands.default_permissions(moderate_members=True)
     @has_guild_permission("moderate_members")
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str = "Mal comportamiento"):
+        if not can_moderate_member(interaction.user, user):
+            return await interaction.response.send_message("No puedes sancionar a alguien con un rol igual o superior al tuyo.", ephemeral=True)
         await interaction.response.defer()
         await db.execute(
             "INSERT INTO warns (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)",
@@ -31,7 +33,10 @@ class WarnsCog(commands.Cog):
         embed = discord.Embed(title="Warn aplicado ⚠️", color=0xF1C40F)
         embed.add_field(name="Usuario", value=user.mention, inline=True)
         embed.add_field(name="Warn #", value=str(total), inline=True)
-        embed.add_field(name="Razón", value=reason, inline=False)
+        safe_reason = str(reason)
+        if len(safe_reason) > 1000:
+            safe_reason = safe_reason[:997] + "..."
+        embed.add_field(name="Razón", value=safe_reason, inline=False)
         embed.add_field(name="Por", value=interaction.user.mention, inline=True)
         embed.set_footer(text=f"ID: {user.id}")
         await interaction.followup.send(embed=embed)
@@ -72,16 +77,21 @@ class WarnsCog(commands.Cog):
             )
         embed = discord.Embed(title=f"Warns de {user.display_name} ⚠️", color=0xE67E22)
         embed.set_thumbnail(url=user.display_avatar.url)
-        for index, row in enumerate(rows, 1):
+        visible_rows = rows[:25]
+        for index, row in enumerate(visible_rows, 1):
             moderator = interaction.guild.get_member(row["moderator_id"])
             moderator_name = moderator.display_name if moderator else f"ID:{row['moderator_id']}"
             date = row["created_at"].strftime("%Y-%m-%d")
+            reason = str(row["reason"])
+            if len(reason) > 850:
+                reason = reason[:847] + "..."
             embed.add_field(
                 name=f"Warn #{index} (ID:{row['id']})",
-                value=f"**Razón:** {row['reason']}\n**Por:** {moderator_name}\n**Fecha:** {date}",
+                value=f"**Razón:** {reason}\n**Por:** {moderator_name}\n**Fecha:** {date}",
                 inline=False,
             )
-        embed.set_footer(text=f"Total: {len(rows)} warns | ID: {user.id}")
+        extra = " · Mostrando los primeros 25" if len(rows) > 25 else ""
+        embed.set_footer(text=f"Total: {len(rows)} warns{extra} | ID: {user.id}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearwarns", description="[Staff] Borra todos los warns de un usuario")

@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core import db
+from core import db, TU_ID
 
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "cards"
 PACK_PRICE = 175
@@ -273,9 +273,7 @@ async def ensure_card_catalog() -> None:
            FROM jsonb_to_recordset($1::jsonb) AS x(
              slug text,name text,rarity text,image_file text,drop_weight int,base_value int,
              emoji_name text,emoji_id text)
-           ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name,rarity=EXCLUDED.rarity,
-             image_file=EXCLUDED.image_file,drop_weight=EXCLUDED.drop_weight,base_value=EXCLUDED.base_value,
-             emoji_name=EXCLUDED.emoji_name,emoji_id=EXCLUDED.emoji_id,active=TRUE""",
+           ON CONFLICT (slug) DO NOTHING""",
         __import__("json").dumps(rows),
     )
     migrated = await db.fetchval("SELECT migration_key FROM schema_migrations WHERE migration_key='character_pixel_assets_v1'")
@@ -385,6 +383,23 @@ async def purchase_listing(guild_id: int, user_id: int, listing_id: int, quantit
             await connection.execute("UPDATE card_market_listings SET remaining=$1,status=CASE WHEN $1=0 THEN 'sold' ELSE status END WHERE id=$2", remaining, listing_id)
             card = await connection.fetchrow("SELECT name,rarity,emoji_name,emoji_id FROM card_catalog WHERE slug=$1", listing["card_slug"])
     return {"card": card, "quantity": quantity, "total": total, "seller_id": listing["seller_id"]}, None
+
+
+async def cancel_listing(guild_id: int, user_id: int, listing_id: int):
+    async with db._pool().acquire() as connection:
+        async with connection.transaction():
+            listing = await connection.fetchrow(
+                "SELECT * FROM card_market_listings WHERE id=$1 AND guild_id=$2 AND seller_id=$3 AND status='active' FOR UPDATE",
+                listing_id, guild_id, user_id,
+            )
+            if not listing:
+                return None, "La publicación no existe, no es tuya o ya terminó."
+            if listing["remaining"] > 0:
+                await add_card(connection, guild_id, user_id, listing["card_slug"], listing["remaining"])
+            await connection.execute(
+                "UPDATE card_market_listings SET remaining=0,status='cancelled' WHERE id=$1", listing_id
+            )
+            return int(listing["remaining"]), None
 
 
 class CardService:
@@ -716,9 +731,19 @@ class AbilityChoice(discord.ui.Select):
         await self.cog.battle_action(interaction,self.key,f"ability:{self.values[0]}")
 
 class AbilityChoiceView(discord.ui.View):
-    def __init__(self,cog,key,user_id,stats):
+    def __init__(self,cog,key,user_id,stats,message=None):
         super().__init__(timeout=30)
+        self.cog, self.key, self.message = cog, key, message
         self.add_item(AbilityChoice(cog,key,user_id,stats))
+
+    async def on_timeout(self):
+        session = self.cog.battles.get(self.key)
+        if not session or not self.message:
+            return
+        try:
+            await self.message.edit(embed=self.cog.battle_embed(session, "El menú expiró; elige otra acción."), view=BattleView(self.cog, self.key))
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 class SwitchChoice(discord.ui.Select):
     def __init__(self, cog, key, user_id, bench):
@@ -769,6 +794,7 @@ class RematchView(discord.ui.View):
                             for uid in finished_session['users']}
         self.users       = finished_session['users']
         self.mode        = finished_session.get('mode', '1v1')
+        self.is_rematch  = True
         self.accepted    = set()
         self._message_id: int | None = None  # se rellena al enviar el embed final
 
@@ -855,7 +881,7 @@ class BattleView(discord.ui.View):
         if len(available)==1:
             await interaction.response.defer(); await self.cog.battle_action(interaction,self.key,f"ability:{available[0]}")
         else:
-            await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats))
+            await interaction.response.edit_message(embed=notice("✨ Elige una habilidad","Selecciona qué habilidad quieres utilizar. Esto todavía no consume tu turno."),view=AbilityChoiceView(self.cog,self.key,interaction.user.id,stats,interaction.message))
     @discord.ui.button(label="Defender",emoji="🛡️",style=discord.ButtonStyle.secondary)
     async def defend(self,interaction,button): await self.act(interaction,"defend")
     @discord.ui.button(label="Cambiar",emoji="🔄",style=discord.ButtonStyle.secondary)
@@ -874,10 +900,104 @@ class BattleView(discord.ui.View):
 # COMPARAR COLECCIONES
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _comparison_stats(rows, side):
+    quantity_key = "qty_a" if side == "a" else "qty_b"
+    return len(rows), sum(r[quantity_key] for r in rows), sum(r[quantity_key] * r.get("base_value", 0) for r in rows)
+
+
+def comparison_embed(owner_name, other_name, solo_a, solo_b, ambos, section="solo_a", page=0):
+    sections = {
+        "solo_a": (f"Solo {owner_name}", solo_a),
+        "solo_b": (f"Solo {other_name}", solo_b),
+        "ambos": ("En común", ambos),
+    }
+    title, rows = sections[section]
+    per_page = 8
+    total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    chunk = rows[page * per_page:(page + 1) * per_page]
+
+    if section == "solo_a":
+        lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · ×{r['qty_a']}" for r in chunk]
+    elif section == "solo_b":
+        lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · ×{r['qty_b']}" for r in chunk]
+    else:
+        lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']} · {owner_name}: ×{r['qty_a']} · {other_name}: ×{r['qty_b']}" for r in chunk]
+    description = "\n".join(lines) or "No hay cartas en esta sección."
+    embed = notice(f"Comparación de colecciones 🔍 · {title}", description, 0x5865F2)
+
+    unique_a, copies_a, value_a = _comparison_stats(solo_a + ambos, "a")
+    unique_b, copies_b, value_b = _comparison_stats(solo_b + ambos, "b")
+    embed.add_field(name=f"{owner_name}", value=f"Únicas: **{unique_a}**\nCopias: **{copies_a}**\nValor: **{coins_text(value_a)}**", inline=True)
+    embed.add_field(name=f"{other_name}", value=f"Únicas: **{unique_b}**\nCopias: **{copies_b}**\nValor: **{coins_text(value_b)}**", inline=True)
+    embed.add_field(name="Resumen", value=f"Solo {owner_name}: **{len(solo_a)}**\nSolo {other_name}: **{len(solo_b)}**\nEn común: **{len(ambos)}**", inline=True)
+    embed.set_footer(text=f"Página {page + 1}/{total_pages} · Sección: {title}")
+    return embed, total_pages
+
+
+class ComparisonView(discord.ui.View):
+    def __init__(self, owner_id, owner_name, other_name, solo_a, solo_b, ambos):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.owner_name = owner_name
+        self.other_name = other_name
+        self.sections = {"solo_a": solo_a, "solo_b": solo_b, "ambos": ambos}
+        self.section = "solo_a"
+        self.page = 0
+        self._sync()
+
+    def _sync(self):
+        total_pages = max(1, (len(self.sections[self.section]) + 7) // 8)
+        self.previous.disabled = self.page <= 0
+        self.next.disabled = self.page >= total_pages - 1
+        self.only_a.style = discord.ButtonStyle.primary if self.section == "solo_a" else discord.ButtonStyle.secondary
+        self.only_b.style = discord.ButtonStyle.primary if self.section == "solo_b" else discord.ButtonStyle.secondary
+        self.shared.style = discord.ButtonStyle.primary if self.section == "ambos" else discord.ButtonStyle.secondary
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Solo quien inició la comparación puede usar estos botones.", ephemeral=True)
+            return False
+        return True
+
+    async def _change_section(self, interaction, section):
+        self.section = section
+        self.page = 0
+        self._sync()
+        embed, _ = comparison_embed(self.owner_name, self.other_name, self.sections["solo_a"], self.sections["solo_b"], self.sections["ambos"], self.section, self.page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Solo tú", style=discord.ButtonStyle.primary, row=0)
+    async def only_a(self, interaction, button):
+        await self._change_section(interaction, "solo_a")
+
+    @discord.ui.button(label="Solo el otro", style=discord.ButtonStyle.secondary, row=0)
+    async def only_b(self, interaction, button):
+        await self._change_section(interaction, "solo_b")
+
+    @discord.ui.button(label="En común", style=discord.ButtonStyle.secondary, row=0)
+    async def shared(self, interaction, button):
+        await self._change_section(interaction, "ambos")
+
+    @discord.ui.button(label="Anterior", emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+    async def previous(self, interaction, button):
+        self.page -= 1
+        self._sync()
+        embed, _ = comparison_embed(self.owner_name, self.other_name, self.sections["solo_a"], self.sections["solo_b"], self.sections["ambos"], self.section, self.page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Siguiente", emoji="▶️", style=discord.ButtonStyle.primary, row=1)
+    async def next(self, interaction, button):
+        self.page += 1
+        self._sync()
+        embed, _ = comparison_embed(self.owner_name, self.other_name, self.sections["solo_a"], self.sections["solo_b"], self.sections["ambos"], self.section, self.page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 async def compare_collections(guild_id: int, user_a: int, user_b: int):
-    """Devuelve (solo_a, solo_b, ambos) con filas de card_catalog."""
+    """Devuelve (solo_a, solo_b, ambos) con cantidades y valor base."""
     rows = await db.fetch(
-        """SELECT c.slug, c.name, c.rarity, c.emoji_name, c.emoji_id,
+        """SELECT c.slug, c.name, c.rarity, c.emoji_name, c.emoji_id, c.base_value,
                   COALESCE(a.quantity, 0)::int AS qty_a,
                   COALESCE(b.quantity, 0)::int AS qty_b
            FROM card_catalog c
@@ -889,7 +1009,7 @@ async def compare_collections(guild_id: int, user_a: int, user_b: int):
     )
     solo_a = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] == 0]
     solo_b = [r for r in rows if r["qty_b"] > 0 and r["qty_a"] == 0]
-    ambos  = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] > 0]
+    ambos = [r for r in rows if r["qty_a"] > 0 and r["qty_b"] > 0]
     return solo_a, solo_b, ambos
 
 
@@ -1037,13 +1157,25 @@ class EvolveConfirmView(discord.ui.View):
         self.stop()
 
         slug       = self.card_row_data["slug"]
-        new_level  = self.current_level + 1
-        new_boost  = self.current_boost + self.evo_row["stat_boost_pct"]
-        cost_cop   = self.evo_row["cost_copies"]
-        cost_coins = self.evo_row["cost_coins"]
-
         async with db._pool().acquire() as conn:
             async with conn.transaction():
+                current = await conn.fetchrow(
+                    "SELECT evo_level, stat_boost_pct FROM card_inventory_evo_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
+                    self.guild_id, self.user_id, slug,
+                )
+                rule = await conn.fetchrow(
+                    "SELECT cost_copies, cost_coins, stat_boost_pct, max_level FROM card_evolutions WHERE base_slug=$1 FOR UPDATE", slug
+                )
+                if not rule:
+                    return await interaction.response.edit_message(embed=notice("Evolución cancelada", "La regla de evolución ya no existe.", 0xED4245), view=None)
+                live_level = int(current["evo_level"]) if current else 0
+                live_boost = int(current["stat_boost_pct"]) if current else 0
+                if live_level >= int(rule["max_level"]):
+                    return await interaction.response.edit_message(embed=notice("Nivel máximo alcanzado", "Esta carta ya no puede evolucionar más.", 0xFEE75C), view=None)
+                cost_cop = int(rule["cost_copies"])
+                cost_coins = int(rule["cost_coins"])
+                new_level = live_level + 1
+                new_boost = live_boost + int(rule["stat_boost_pct"])
                 inv = await conn.fetchrow(
                     "SELECT quantity FROM card_inventory_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3 FOR UPDATE",
                     self.guild_id, self.user_id, slug,
@@ -1193,13 +1325,33 @@ class CardsCog(commands.Cog):
                         offers[users[index]][slug] = {"quantity": int(quantity), "name": card["name"], "emoji": card_emoji(card)}
             self.trade_sessions[row["channel_id"]] = {
                 "trade_id": row["id"], "guild_id": row["guild_id"], "channel_id": row["channel_id"],
+                "message_id": row.get("message_id"),
                 "user_a": users[0], "user_b": users[1],
                 "name_a": members[0].display_name if members[0] else str(users[0]),
                 "name_b": members[1].display_name if members[1] else str(users[1]),
                 "offers": offers,
                 "confirmed": {users[0]: row["confirmed_a"], users[1]: row["confirmed_b"]},
-                "last_activity_at": time.monotonic(),
+                "last_activity_at": time.monotonic() - max(0, (datetime.now(timezone.utc) - (row.get("last_activity_at") or row.get("created_at") or datetime.now(timezone.utc))).total_seconds()),
             }
+            message = None
+            message_id = self.trade_sessions[row["channel_id"]].get("message_id")
+            try:
+                if message_id:
+                    message = await channel.fetch_message(message_id)
+                else:
+                    # Compatibilidad con sesiones creadas antes de persistir message_id.
+                    async for candidate in channel.history(limit=100):
+                        title = candidate.embeds[0].title if candidate.embeds else ""
+                        if candidate.author == self.bot.user and title and title.startswith("Tradeo"):
+                            message = candidate
+                            break
+                if message:
+                    self.trade_sessions[row["channel_id"]]["message_id"] = message.id
+                    if row["id"]:
+                        await db.execute("UPDATE card_trade_sessions SET message_id=$1 WHERE id=$2", message.id, row["id"])
+                    await message.edit(view=TradeView(self, row["channel_id"]))
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @app_commands.command(name="cguia", description="Guía breve de comandos de Abo Cards (! y /)")
     @app_commands.guild_only()
@@ -1353,24 +1505,17 @@ class CardsCog(commands.Cog):
             )
         gid = interaction.guild_id
         solo_yo, solo_el, ambos = await compare_collections(gid, interaction.user.id, usuario.id)
-
-        def fmt(rows, limit=15):
-            if not rows:
-                return "—"
-            lines = [f"{card_emoji(r)} **{r['name']}** · {r['rarity']}" for r in rows[:limit]]
-            if len(rows) > limit:
-                lines.append(f"*…y {len(rows) - limit} más*")
-            return "\n".join(lines)
-
-        embed = notice(
-            f"Comparación: {interaction.user.display_name} vs {usuario.display_name} 🔍",
-            f"Únicas tuyas: **{len(solo_yo)}** · Únicas de {usuario.display_name}: **{len(solo_el)}** · En común: **{len(ambos)}**",
-            0x5865F2,
+        embed, _ = comparison_embed(
+            interaction.user.display_name, usuario.display_name,
+            solo_yo, solo_el, ambos, "solo_a", 0,
         )
-        embed.add_field(name=f"Solo tú tienes ({len(solo_yo)})", value=fmt(solo_yo), inline=False)
-        embed.add_field(name=f"Solo {usuario.display_name} tiene ({len(solo_el)})", value=fmt(solo_el), inline=False)
-        embed.add_field(name=f"Ambos tienen ({len(ambos)})", value=fmt(ambos), inline=False)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(
+            embed=embed,
+            view=ComparisonView(
+                interaction.user.id, interaction.user.display_name, usuario.display_name,
+                solo_yo, solo_el, ambos,
+            ),
+        )
 
     # ── FUSIÓN ────────────────────────────────────────────────────────────────
 
@@ -1391,7 +1536,7 @@ class CardsCog(commands.Cog):
         rule = FUSION_RULES.get(row["rarity"])
         if not rule:
             return await interaction.response.send_message(
-                embed=notice("Fusión no disponible", f"Las cartas **Legendarias** no pueden fusionarse.", 0xED4245),
+                embed=notice("Fusión no disponible", "Las cartas **Legendarias** no pueden fusionarse.", 0xED4245),
                 ephemeral=True,
             )
 
@@ -1588,6 +1733,10 @@ class CardsCog(commands.Cog):
                                    nivel_maximo: int = 5,
                                    costo_monedas: int = 100,
                                    costo_copias: int = 2):
+        if interaction.user.id != TU_ID:
+            return await interaction.response.send_message("Esta configuración global solo puede modificarla el propietario del bot.", ephemeral=True)
+        if costo_monedas < 1 or costo_copias < 1:
+            return await interaction.response.send_message("Los costos deben ser mayores que 0.", ephemeral=True)
         base = await card_row(carta_base)
         if not base:
             return await interaction.response.send_message(
@@ -1785,6 +1934,8 @@ class CardsCog(commands.Cog):
             view=TradeView(self, interaction.channel_id), allowed_mentions=discord.AllowedMentions(users=True),
         )
         session["message_id"]=(await interaction.original_response()).id
+        if session.get("trade_id"):
+            await db.execute("UPDATE card_trade_sessions SET message_id=$1,last_activity_at=NOW() WHERE id=$2", session["message_id"], session["trade_id"])
 
     async def _refresh_trade_message(self, channel_id, title="Tradeo actualizado 🤝", extra=""):
         session=self.trade_sessions.get(channel_id)
@@ -1810,7 +1961,7 @@ class CardsCog(commands.Cog):
         session["confirmed"]={session["user_a"]:False,session["user_b"]:False}
         if session.get("trade_id"):
             col="offer_a" if user_id==session["user_a"] else "offer_b"; payload={k:v["quantity"] for k,v in session["offers"][user_id].items()}
-            await db.execute(f"UPDATE card_trade_sessions SET {col}=$1::jsonb,confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$2",__import__("json").dumps(payload),session["trade_id"])
+            await db.execute(f"UPDATE card_trade_sessions SET {col}=$1::jsonb,confirmed_a=FALSE,confirmed_b=FALSE,last_activity_at=NOW() WHERE id=$2",__import__("json").dumps(payload),session["trade_id"])
         await interaction.response.send_message(embed=notice("Carta añadida ✅",f"Ofreciste **×{quantity} {card_emoji(row)} {row['name']}**."),ephemeral=True)
         await self._refresh_trade_message(channel_id)
 
@@ -1818,11 +1969,18 @@ class CardsCog(commands.Cog):
         session=self.trade_sessions.get(channel_id)
         if not session: return await interaction.response.send_message("Este tradeo ya no está activo.",ephemeral=True)
         uid=interaction.user.id; session["last_activity_at"] = time.monotonic(); session["confirmed"][uid]=True; col="confirmed_a" if uid==session["user_a"] else "confirmed_b"
-        if session.get("trade_id"): await db.execute(f"UPDATE card_trade_sessions SET {col}=TRUE WHERE id=$1",session["trade_id"])
+        if session.get("trade_id"): await db.execute(f"UPDATE card_trade_sessions SET {col}=TRUE,last_activity_at=NOW() WHERE id=$1",session["trade_id"])
         if all(session["confirmed"].values()):
+            if session.get("completing"):
+                return await interaction.response.send_message("El tradeo ya se está procesando.", ephemeral=True)
+            if not any(session["offers"][uid] for uid in session["users"]):
+                session["confirmed"]={session["user_a"]:False,session["user_b"]:False}
+                return await interaction.response.send_message("No puedes completar un tradeo sin ofrecer cartas.", ephemeral=True)
+            session["completing"] = True
             result=await self._complete_trade(session)
             if result:
                 self.trade_sessions.pop(channel_id,None); await interaction.response.edit_message(embed=result,view=None); return
+            session.pop("completing", None)
             session["confirmed"]={session["user_a"]:False,session["user_b"]:False}; msg="Uno de los dos usuarios ya no tiene las cartas ofrecidas. Las confirmaciones se reiniciaron."
             if session.get("trade_id"): await db.execute("UPDATE card_trade_sessions SET confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$1",session["trade_id"])
         else: msg=f"{interaction.user.mention} confirmó su oferta. Falta la confirmación del otro usuario."
@@ -1865,7 +2023,7 @@ class CardsCog(commands.Cog):
             "favorita": "favorita", "tienda": "tienda", "ayudacartas": "cguia",
         }
         command = aliases.get(command, command)
-        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cguia", "comparar", "favorita", "tienda"}
+        quick = {"sobre", "coleccion", "carta", "saldo_cartas", "diario_cartas", "mercado", "ranking_cartas", "tradeo", "sets", "set", "perfil", "cguia", "comparar"}
         if command not in quick:
             return False
         if command == "cguia":
@@ -1897,8 +2055,9 @@ class CardsCog(commands.Cog):
         if command == "comparar":
             target = message.mentions[0] if message.mentions else None
             if target is None and argument:
-                id_match = re.fullmatch(r"<@!?(\d+)>|\d+", argument.strip())
-                target_id = int(next(group for group in id_match.groups() if group)) if id_match else None
+                token = argument.strip()
+                id_match = re.fullmatch(r"<@!?(\d+)>|\d+", token)
+                target_id = int(id_match.group(1) or token) if id_match else None
                 if target_id:
                     target = message.guild.get_member(target_id)
                 else:
@@ -1947,6 +2106,7 @@ class CardsCog(commands.Cog):
                 VALUES ($1,$2,$3,$4,'{}'::jsonb,'{}'::jsonb,'active') RETURNING id""", message.guild.id, message.author.id, target.id, message.channel.id)
             sent=await message.channel.send(embed=self._trade_embed(self.trade_sessions[message.channel.id], "Tradeo iniciado 🤝", "Usen los botones para añadir cartas, confirmar o cancelar. El formato por texto sigue disponible."), view=TradeView(self,message.channel.id), allowed_mentions=discord.AllowedMentions(users=True))
             self.trade_sessions[message.channel.id]["message_id"]=sent.id
+            await db.execute("UPDATE card_trade_sessions SET message_id=$1,last_activity_at=NOW() WHERE id=$2", sent.id, self.trade_sessions[message.channel.id]["trade_id"])
             return True
         if command == "perfil":
             target = message.mentions[0] if message.mentions else message.author
@@ -2062,7 +2222,7 @@ class CardsCog(commands.Cog):
 
     async def _parse_trade_offer(self, text: str) -> dict:
         text = text.strip()
-        if text.lower() in {"nada", "nada.", "ninguna", "ninguna.", "no", "ninguno", "-"}:
+        if text.lower() in {"nada", "nada.", "ninguna", "ninguna.", "ninguno", "-"}:
             return {}
         parts = [part.strip() for part in re.split(r"[,\n]+", text) if part.strip()]
         offer = {}
@@ -2111,11 +2271,19 @@ class CardsCog(commands.Cog):
             if session.get("trade_id"):
                 await db.execute(f"UPDATE card_trade_sessions SET {confirmation_column}=TRUE WHERE id=$1", session["trade_id"])
             if all(session["confirmed"].values()):
+                if session.get("completing"):
+                    return True
+                if not any(session["offers"][uid] for uid in session["users"]):
+                    session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
+                    await message.channel.send(embed=notice("Tradeo detenido", "No puedes completar un tradeo sin ofrecer cartas.", 0xFEE75C))
+                    return True
+                session["completing"] = True
                 result = await self._complete_trade(session)
                 if result:
                     self.trade_sessions.pop(message.channel.id, None)
                     await message.channel.send(embed=result, allowed_mentions=discord.AllowedMentions(users=True))
                 else:
+                    session.pop("completing", None)
                     session["confirmed"] = {session["user_a"]: False, session["user_b"]: False}
                     if session.get("trade_id"):
                         await db.execute("UPDATE card_trade_sessions SET confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$1", session["trade_id"])
@@ -2123,6 +2291,9 @@ class CardsCog(commands.Cog):
             else:
                 await message.channel.send(embed=self._trade_embed(session, "Confirmación recibida ✅", f"{message.author.mention} confirmó. Falta la confirmación del otro usuario."), allowed_mentions=discord.AllowedMentions(users=True))
             return True
+        looks_like_offer = bool(re.match(r"^\d+\s*(?:x|×)?\s+", content)) or "," in content or "\n" in content
+        if not looks_like_offer and await card_row(content) is None and content.lower() not in {"nada", "nada.", "ninguna", "ninguna.", "ninguno", "-"}:
+            return False
         try:
             offer = await self._parse_trade_offer(content)
         except ValueError as error:
@@ -2134,12 +2305,14 @@ class CardsCog(commands.Cog):
         if session.get("trade_id"):
             offer_column = "offer_a" if message.author.id == session["user_a"] else "offer_b"
             payload = {slug: data["quantity"] for slug, data in offer.items()}
-            await db.execute(f"UPDATE card_trade_sessions SET {offer_column}=$1::jsonb,confirmed_a=FALSE,confirmed_b=FALSE WHERE id=$2", __import__("json").dumps(payload), session["trade_id"])
+            await db.execute(f"UPDATE card_trade_sessions SET {offer_column}=$1::jsonb,confirmed_a=FALSE,confirmed_b=FALSE,last_activity_at=NOW() WHERE id=$2", __import__("json").dumps(payload), session["trade_id"])
         await message.channel.send(embed=self._trade_embed(session, "Oferta actualizada 🎴", f"Oferta de {message.author.mention} guardada. Las confirmaciones se reiniciaron."), allowed_mentions=discord.AllowedMentions(users=True))
         return True
 
     async def _complete_trade(self, session: dict):
         offers = session["offers"]
+        if not any(offers.get(user_id) for user_id in (session["user_a"], session["user_b"])):
+            return None
         async with db._pool().acquire() as connection:
             async with connection.transaction():
                 checks = []
@@ -2210,8 +2383,6 @@ class CardsCog(commands.Cog):
         next_rotation = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + _dt.timedelta(days=1)
         secs_left = int((next_rotation - now_utc).total_seconds())
         hours_left, mins_left = secs_left // 3600, (secs_left % 3600) // 60
-
-        RARITY_COLOR = {"Común": 0x95A5A6, "Rara": 0x3498DB, "Épica": 0x9B59B6, "Legendaria": 0xF1C40F}
 
         class ShopView(discord.ui.LayoutView):
             def __init__(self):
@@ -2323,12 +2494,24 @@ class CardsCog(commands.Cog):
             for row in rows
         ]
 
+    @app_commands.command(name="mercado_cancelar", description="Cancela una publicación tuya y devuelve las cartas")
+    @app_commands.guild_only()
+    async def mercado_cancelar(self, interaction: discord.Interaction, publicacion: int):
+        if publicacion < 1:
+            return await interaction.response.send_message("Indica un ID de publicación válido.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        restored, error = await cancel_listing(interaction.guild_id, interaction.user.id, publicacion)
+        if error:
+            return await interaction.followup.send(embed=notice("No se pudo cancelar", error, 0xED4245), ephemeral=True)
+        await interaction.followup.send(embed=notice("Publicación cancelada ✅", f"Se devolvieron **×{restored}** cartas a tu colección."), ephemeral=True)
+
     @app_commands.command(name="mercado", description="Muestra las cartas disponibles en el mercado")
     @app_commands.guild_only()
     async def mercado(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         rows = await db.fetch("""SELECT l.id,l.seller_id,c.name,c.rarity,c.emoji_name,c.emoji_id,l.remaining,l.price_each FROM card_market_listings l JOIN card_catalog c ON c.slug=l.card_slug WHERE l.guild_id=$1 AND l.status='active' AND l.remaining>0 ORDER BY l.created_at DESC LIMIT 50""", interaction.guild_id)
         await _market_seller_names(rows, interaction.guild)
-        await interaction.response.send_message(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
+        await interaction.edit_original_response(view=MarketView(rows, 0), allowed_mentions=discord.AllowedMentions(users=True))
 
     @app_commands.command(name="ranking_cartas", description="Ranking de coleccionistas por valor de cartas")
     @app_commands.guild_only()
@@ -2405,6 +2588,11 @@ class CardsCog(commands.Cog):
             for slug in slugs:
                 row=by_slug.get(slug)
                 if not row: continue
+                evo = await db.fetchrow("SELECT stat_boost_pct FROM card_inventory_evo_global WHERE ($1::BIGINT IS NOT NULL) AND user_id=$2 AND card_slug=$3", session['guild_id'], user_id, slug)
+                if evo and int(evo.get('stat_boost_pct') or 0) > 0:
+                    row = dict(row)
+                    base_stats = combat_stats(row)
+                    row['stats'] = _apply_boost(base_stats, int(evo['stat_boost_pct']))
                 hp=max(1,stat_num(combat_stats(row),'HP',BATTLE_MAX_HP))
                 team.append({"id":user_id,"mention":f"<@{user_id}>","card":row,"max_hp":hp,"hp":hp,"energy":1,"defending":False,"states":{},"last_breath_used":False})
             if not team: return False
@@ -2481,6 +2669,14 @@ class CardsCog(commands.Cog):
         if action=='surrender': return await self.end_battle(interaction,key,enemy_id,f"{actor['mention']} se rindió. ¡Victoria para {enemy['mention']}!")
         message=''
 
+        if 'Lento' in actor['states']:
+            actor['states']['Lento'] -= 1
+            if actor['states']['Lento'] <= 0: del actor['states']['Lento']
+            session['turns'] += 1; session['turn'] = enemy_id
+            await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2", session['turns'], session['db_id'])
+            msg = await interaction.edit_original_response(embed=self.battle_embed(session, f"🐢 {actor['mention']} está **Lento** y pierde el turno sin gastar energía."), view=BattleView(self,key))
+            session['battle_message_id'] = msg.id; return
+
         # ── Aturdimiento: pierde el turno sin ganar energía ────────────────────
         if 'Aturdimiento' in actor['states']:
             actor['states']['Aturdimiento']-=1
@@ -2532,15 +2728,6 @@ class CardsCog(commands.Cog):
             # ── Debilitado: reduce el ATK del actor un 30% ─────────────────────
             if 'Debilitado' in actor['states']:
                 damage=max(1,int(damage*0.7))
-            # ── Lento: el actor pierde este turno ──────────────────────────────
-            if 'Lento' in actor['states']:
-                actor['states']['Lento']-=1
-                if actor['states']['Lento']<=0: del actor['states']['Lento']
-                session['turns']+=1; session['turn']=enemy_id
-                await db.execute("UPDATE card_battles SET turns=$1 WHERE id=$2",session['turns'],session['db_id'])
-                slow_msg=f"🐢 {actor['mention']} está **Lento** y pierde el turno."
-                msg=await interaction.edit_original_response(embed=self.battle_embed(session,slow_msg),view=BattleView(self,key))
-                session['battle_message_id']=msg.id; return
             # ── Aplicar fórmula según tipo de daño ─────────────────────────────
             enemy_stats=combat_stats(enemy['card']); defense=stat_num(enemy_stats,'DEF',0)
             blocked=enemy['defending']
@@ -2638,10 +2825,12 @@ class CardsCog(commands.Cog):
         if not session: return
         loser_id=next(x for x in session['users'] if x!=winner_id)
         await db.execute("UPDATE card_battles SET status='completed',winner_id=$1,loser_id=$2,turns=$3,result=$4::jsonb,completed_at=NOW() WHERE id=$5",winner_id,loser_id,session['turns'],json.dumps({'message':message,'teams':{str(u):[f['card']['slug'] for f in t] for u,t in session.get('teams',{}).items()}}),session['db_id'])
-        # ── Recompensa: 100 Abo Coins al ganador (constante global BATTLE_REWARD) ─
-        await ensure_wallet(session['guild_id'],winner_id)
-        await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
-        reward_msg=f"\n\n🏆 Pelea terminada. <@{winner_id}> gana **+{coins_text(BATTLE_REWARD)} Abo Coins**."
+        # Las revanchas reutilizan cartas y no generan monedas para evitar farming.
+        reward_msg = "\n\n🏆 Pelea terminada."
+        if not session.get('is_rematch'):
+            await ensure_wallet(session['guild_id'],winner_id)
+            await db.execute("UPDATE card_wallets_global SET coins=coins+$1,updated_at=NOW() WHERE ($2::BIGINT IS NOT NULL) AND user_id=$3",BATTLE_REWARD,session['guild_id'],winner_id)
+            reward_msg=f"\n\n🏆 Pelea terminada. <@{winner_id}> gana **+{coins_text(BATTLE_REWARD)} Abo Coins**."
         final_embed=self.battle_embed(session,message+reward_msg)
         rematch_view=RematchView(self,session,winner_id,loser_id)
         self.battles.pop(key,None)  # borrar ANTES del await para evitar reuso, session ya está en local
